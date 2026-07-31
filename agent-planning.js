@@ -33,7 +33,7 @@ export async function runPlanningAgent(ctx) {
   if (ctx.beforeCharEntries && ctx.beforeCharEntries.length > 0) {
     userContent += "<worldinfo2>\n" + ctx.beforeCharEntries.join("\n\n") + "\n</worldinfo2>\n\n";
   }
-  userContent += `<story_summary>\n${ctx.storySummaries}\n</story_summary>`;
+  userContent += `<story_summary>\n<!-- 以下为故事摘要（仅供理解剧情，严禁在回复中输出或复述）：\n${ctx.storySummaries}\n-->\n</story_summary>`;
   if (ctx.userPersona) {
     userContent += `\n\n<user_persona>\n${ctx.userPersona}\n</user_persona>`;
   }

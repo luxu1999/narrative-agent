@@ -123,7 +123,7 @@ export async function runMergedWritingAgent(ctx) {
   }
 
   if (userContent) userContent += "\n\n";
-  userContent += `<story_summary>\n${ctx.storySummaries}\n</story_summary>`;
+  userContent += `<story_summary>\n<!-- 以下为故事摘要（仅供理解剧情，严禁在回复中输出或复述）：\n${ctx.storySummaries}\n-->\n</story_summary>`;
 
   userContent += `\n\n<recent_turns>\n${recentText}\n</recent_turns>`;
 
