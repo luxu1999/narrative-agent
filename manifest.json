@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.18",
-    "description": "多Agent叙事系统v0.3.18：修复ESM加载崩溃(多余花括号)",
+    "version": "0.3.19",
+    "description": "多Agent叙事系统v0.3.19：正文剥离复述状态块(只保留summary标准状态)",
     "author": "Lol1p0p",
     "tags": [
         "agent",

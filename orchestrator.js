@@ -549,7 +549,7 @@ export class Orchestrator {
       : "";
 
     const parts = [];
-    parts.push(`<context>\n${narrativeText}\n</context>`);
+    parts.push(`<context>\n${this._stripStateTrackingFromText(narrativeText)}\n</context>`);
     if (summaryText) {
       parts.push(`<summary>\n${summaryText}\n</summary>`);
     }
@@ -871,7 +871,7 @@ export class Orchestrator {
         ? merged.summary_entries.join("\n")
         : "";
       const parts = [];
-      parts.push(`<context>\n${narrativeText}\n</context>`);
+      parts.push(`<context>\n${this._stripStateTrackingFromText(narrativeText)}\n</context>`);
       if (summaryText) {
         parts.push(`<summary>\n${summaryText}\n</summary>`);
       }
@@ -984,7 +984,7 @@ export class Orchestrator {
       : "";
 
     const parts = [];
-    parts.push(`<context>\n${narrativeText}\n</context>`);
+    parts.push(`<context>\n${this._stripStateTrackingFromText(narrativeText)}\n</context>`);
     if (summaryText) {
       parts.push(`<summary>\n${summaryText}\n</summary>`);
     }
@@ -1322,6 +1322,77 @@ export class Orchestrator {
       prevUsed = true;
     }
     return out;
+  }
+
+  // 从正文文本中剥离状态追踪块（写作引擎可能复述注入的旧状态，代码层硬清理，不依赖 AI 自觉）
+  // 匹配 [第N轮]状态追踪： 到 下一个 [第N轮] 或文本结尾 的段落
+  _stripStateTrackingFromText(text) {
+    if (!text || typeof text !== "string") return text;
+    const lines = text.split("\n");
+    const out = [];
+    let inStateBlock = false;
+    let inMemSection = false;
+    let memLineCount = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const l = raw.trim();
+      // 状态块开始：[第N轮]状态追踪：
+      if (/^\[第\s*\d+\s*轮\]\s*状态追踪[\uff1a:]/.test(l)) {
+        inStateBlock = true;
+        inMemSection = false;
+        memLineCount = 0;
+        continue;
+      }
+      if (inStateBlock) {
+        // 重要记忆点段开始
+        if (/^重要记忆点[\uff1a:]/.test(l)) {
+          inMemSection = true;
+          memLineCount = 0;
+          continue;
+        }
+        if (inMemSection) {
+          // 记忆行：- 角色名：内容 或 角色名：内容（无 - 前缀）
+          const isMemLine = /^[-\u2022\u25cf\u25c6\u25a0]?[ \t]*[^\uff1a:\n]{1,12}[\uff1a:]/.test(l) && !/^\[第/.test(l);
+          if (isMemLine) {
+            memLineCount++;
+            continue; // 记忆行跳过
+          }
+          // 遇到下一个 [第N轮] 标记 → 结束状态块（该行留给下一轮处理）
+          if (/^\[第\s*\d+\s*轮\]/.test(l)) {
+            inStateBlock = false;
+            inMemSection = false;
+            out.push(raw);
+            continue;
+          }
+          // 非记忆行 → 状态块结束，该行是正文，保留
+          inStateBlock = false;
+          inMemSection = false;
+          out.push(raw);
+          continue;
+        }
+        // 状态块内、记忆段前的其他行（时间/区域/在场/好感度等字段）→ 跳过
+        if (/^(时间|区域|地点|在场角色|不在场角色|处女膜状态|做爱次数|当前好感度|身体外貌|回溯魔法|当前状态)[\uff1a:]/.test(l) || !l) {
+          continue;
+        }
+        // 意外行 → 结束状态块，保留该行
+        inStateBlock = false;
+        out.push(raw);
+        continue;
+      }
+      // 自由格式状态块兜底：以"时间："开头且后续含 地点/在场角色 等标记
+      if (!inStateBlock && /^时间[\uff1a:]/.test(l)) {
+        let looksLikeState = false;
+        for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+          if (/^(地点|在场角色|当前状态|好感度|处女膜状态|做爱次数|回溯魔法)[\uff1a:]/.test(lines[j].trim())) { looksLikeState = true; break; }
+        }
+        if (looksLikeState) {
+          inStateBlock = true; // 复用状态块跳过逻辑（自由格式无重要记忆点，遇到非字段行即出）
+          continue;
+        }
+      }
+      out.push(raw);
+    }
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   switchToChat(stateManager, summaryStore, fileManager, chatId) {
