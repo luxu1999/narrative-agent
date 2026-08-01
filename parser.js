@@ -68,7 +68,47 @@ export function parseMergedOutput(rawText) {
   // 兜底：AI 可能把「叙事要点」误附在状态追踪条目（重要记忆点）之后，
   // 此时截断丢弃该条目中第一个误附的 [第N轮]… 行及其后内容（状态追踪是唯一摘要条目）
   result.summary_entries = stripTrailingTurnLines(result.summary_entries);
+  // 去重拦截：summary_entries 只保留最后一条标准格式状态追踪
+  // ① 丢弃非标准格式的自由状态块（无 [第N轮]状态追踪： 前缀，AI 自由发挥的残次品）
+  // ② 丢弃重复的旧轮次状态追踪（指引文案诱导 AI 复述的旧状态，如 [第9轮] + [第10轮] 并存时只留 [第10轮]）
+  result.summary_entries = dedupeStateTracking(result.summary_entries);
   return result;
+}
+
+// 状态追踪去重：只保留最后一条标准格式（[第N轮]状态追踪： 前缀）的状态追踪
+// 其余状态类条目（自由格式残次品 / 重复旧轮次）全部丢弃
+function dedupeStateTracking(entries) {
+  if (!Array.isArray(entries)) return entries;
+  const out = [];
+  let lastTrackingIndex = -1;
+  // 先找最后一条标准格式状态追踪的位置
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (typeof e === "string" && /^\s*\[\u7b2c\s*\d+\s*\u8f6e\]\s*\u72b6\u6001\u8ffd\u8e2a[\uff1a:]/.test(e)) {
+      lastTrackingIndex = i;
+      break;
+    }
+  }
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (typeof e !== "string") { out.push(e); continue; }
+    const isStandardTracking = /^\s*\[\u7b2c\s*\d+\s*\u8f6e\]\s*\u72b6\u6001\u8ffd\u8e2a[\uff1a:]/.test(e);
+    if (isStandardTracking) {
+      // 只保留最后一条标准状态追踪
+      if (i === lastTrackingIndex) out.push(e);
+      else console.warn("[NA] 丢弃重复状态追踪条目:", e.substring(0, 30).replace(/\n/g, " "));
+      continue;
+    }
+    // 自由格式状态块判定（无标准前缀但含状态字段标记）
+    const freeMarkers = [/地\u70b9[\uff1a:]/, /在\u573a\u89d2\u8272[\uff1a:]/, /当\u524d\u72b6\u6001/, /处\u5973\u819c\u72b6\u6001/, /做\u7231\u6b21\u6570/, /回\u6eaf\u9b54\u6cd5/, /好\u611f\u5ea6[\uff1a:]/];
+    const looksLikeState = /^\s*\u65f6\u95f4[\uff1a:]/.test(e) || freeMarkers.some(re => re.test(e));
+    if (looksLikeState) {
+      console.warn("[NA] 丢弃自由格式状态块:", e.substring(0, 50).replace(/\n/g, " "));
+      continue;
+    }
+    out.push(e);
+  }
+  return out;
 }
 
 // 截断状态追踪条目末尾误附的 [第N轮]叙事要点 行（直接丢弃，不再拆成独立条目）

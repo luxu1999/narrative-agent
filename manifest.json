@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.16",
-    "description": "多Agent叙事系统v0.3.16：规划/工具执行/写作/合并分析（v0.3.11代码状态）",
+    "version": "0.3.17",
+    "description": "多Agent叙事系统v0.3.17：修复双状态追踪(方案A'提取真实状态+去重拦截+轮次归一化)",
     "author": "Lol1p0p",
     "tags": [
         "agent",

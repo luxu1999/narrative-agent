@@ -258,26 +258,27 @@ export class Orchestrator {
       // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
       userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【当前世界状态，必须完全参照，禁止矛盾；仅供理解，严禁在正文复述输出（系统会自动追加状态块）】";
       // 关键：将注入的状态同步写回 summaryStore 最新条目（覆盖 checkpoint 恢复的旧值）
-      try {
+            try {
         const store = this.summaryStore;
+        // 注入内容带旧轮次前缀（如 [第9轮]），写回时统一改为当前轮次，避免 summaryStore 基准错乱
+        const currentTurn = this.turnCounter + 1;
+        const injectedNormalized = injected.replace(/^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/, "[第" + currentTurn + "轮]");
         if (store && store._entries && store._entries.length > 0) {
           // 先清理 [第N轮] 占位符残留条目（历史 bug 产生的脏数据，防止 merged-analysis 读到）
-          store._entries = store._entries.filter(e => !(typeof e === "string" && e.includes("[\u7b2cN\u8f6e]")));
+          store._entries = store._entries.filter(e => !(typeof e === "string" && e.includes("[第N轮]")));
           // 替换最后一条真实状态追踪条目
           let replaced = false;
           for (let i = store._entries.length - 1; i >= 0; i--) {
-            if (store._entries[i].includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
-              store._entries[i] = injected;
+            if (store._entries[i].includes("状态追踪：")) {
+              store._entries[i] = injectedNormalized;
               replaced = true;
               break;
             }
           }
-          if (!replaced) store._entries.push(injected);
+          if (!replaced) store._entries.push(injectedNormalized);
         } else if (store && store._entries) {
-          store._entries.push(injected);
-        }
-        console.log("[NarrativeAgent] ✅ 注入状态已同步写回 summaryStore (含[第N轮]残留清理)");
-      } catch (syncErr) {
+          store._entries.push(injectedNormalized);
+        }} catch (syncErr) {
         console.warn("[NarrativeAgent] 注入状态写回 summaryStore 失败:", syncErr.message);
       }
       console.log("[NarrativeAgent] ✅ 状态追踪已拼入用户消息包 (" + injected.length + " chars)");
