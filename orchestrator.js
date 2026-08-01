@@ -244,10 +244,10 @@ export class Orchestrator {
     if (isRegeneration) {
       turnId = `turn_${String(this.turnCounter).padStart(3, "0")}`;
       await this._rollbackToCheckpoint(turnId);
-        } else {
+    } else {
       turnId = `turn_${String(this.turnCounter + 1).padStart(3, "0")}`;
     }
-    // 后台注入$4：将最新状态追踪拼到用户消息后面，形成消息包发给 AI（用户无感知）
+    // 后台注入：将最新状态追踪拼到用户消息后面，形成消息包发给 AI（用户无感知）
     // F 为主（bridge 从最新 AI 消息提取），E 兜底（summaryStore 最新条目）
     // 注意：regenerate 也执行注入（用户可能手动编辑过消息正文，F主提取的是编辑后的事实）
     // 位置：必须在 rollbackToCheckpoint 之后 — rollback 会重置 summaryStore 为 checkpoint 旧值，
@@ -256,7 +256,7 @@ export class Orchestrator {
       const injected = this._injectedStateTracking;
       this._injectedStateTracking = null; // 一次性消费
       // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
-      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【以上为当前世界状态，时间/区域/服饰/在场角色等初始信息必须完全参照，禁止与之矛盾】";
+      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【以上为当前世界状态的参考信息：时间/区域/服饰/在场角色等初始设定必须完全参照，禁止与之矛盾。此状态块仅供你理解当前事实，严禁在回复正文中复述、输出或改写它——状态块会由系统在正文之后自动追加，你只需在正文中自然地体现这些设定即可。】";
       // 关键：将注入的状态同步写回 summaryStore 最新条目（覆盖 checkpoint 恢复的旧值）
       try {
         const store = this.summaryStore;
