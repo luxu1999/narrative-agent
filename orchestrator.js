@@ -261,16 +261,22 @@ export class Orchestrator {
       try {
         const store = this.summaryStore;
         if (store && store._entries && store._entries.length > 0) {
+          // 先清理 [第N轮] 占位符残留条目（历史 bug 产生的脏数据，防止 merged-analysis 读到）
+          store._entries = store._entries.filter(e => !(typeof e === "string" && e.includes("[\u7b2cN\u8f6e]")));
+          // 替换最后一条真实状态追踪条目
+          let replaced = false;
           for (let i = store._entries.length - 1; i >= 0; i--) {
             if (store._entries[i].includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
               store._entries[i] = injected;
+              replaced = true;
               break;
             }
           }
+          if (!replaced) store._entries.push(injected);
         } else if (store && store._entries) {
           store._entries.push(injected);
         }
-        console.log("[NarrativeAgent] ✅ 注入状态已同步写回 summaryStore");
+        console.log("[NarrativeAgent] ✅ 注入状态已同步写回 summaryStore (含[第N轮]残留清理)");
       } catch (syncErr) {
         console.warn("[NarrativeAgent] 注入状态写回 summaryStore 失败:", syncErr.message);
       }

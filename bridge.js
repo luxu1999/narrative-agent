@@ -55,24 +55,35 @@ export class SillyTavernBridge {
       if (!msg || msg.is_user) continue;
       const text = (msg.mes || msg.content || "").trim();
       if (!text) continue;
-      // 状态追踪段：从 [第N轮]状态追踪： 开始
-      const re = /\[第\s*\d+\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/;
-      const m = text.match(re);
-      if (m && m[1] && m[1].trim()) {
-        const stateText = m[1].trim();
-        console.log("[NarrativeAgent] F主：从最新AI消息提取状态追踪 (" + stateText.length + " chars)");
-        return "[第N轮]状态追踪：\n" + stateText;
+      // 状态追踪段：从 [第N轮]状态追踪： 开始（捕获原始轮次数字，禁止硬编码 [第N轮]）
+      // 消息中可能有多条状态追踪（历史残留），取最后一条（最新）
+      const re = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/g;
+      let mm;
+      let last = null;
+      while ((mm = re.exec(text)) !== null) {
+        if (mm[2] && mm[2].trim()) last = mm;
       }
-      // 兼容 <summary> 块内提取
+      if (last) {
+        const stateText = last[2].trim();
+        const roundNum = last[1] || "";
+        console.log("[NarrativeAgent] F主：从最新AI消息提取状态追踪 (第" + roundNum + "轮, " + stateText.length + " chars)");
+        return "[第" + roundNum + "轮]状态追踪：\n" + stateText;
+      }
+      // 兼容 <summary> 块内提取（同样保留原始轮次）
       const sumRe = /<summary>([\s\S]*?)<\/summary>/i;
       const sm = text.match(sumRe);
       if (sm && sm[1]) {
-        const stRe = /\[第\s*\d+\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/;
-        const stm = sm[1].match(stRe);
-        if (stm && stm[1] && stm[1].trim()) {
-          const stateText = stm[1].trim();
-          console.log("[NarrativeAgent] F主：从<summary>提取状态追踪 (" + stateText.length + " chars)");
-          return "[第N轮]状态追踪：\n" + stateText;
+        const stRe = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/g;
+        let stm2;
+        let stLast = null;
+        while ((stm2 = stRe.exec(sm[1])) !== null) {
+          if (stm2[2] && stm2[2].trim()) stLast = stm2;
+        }
+        if (stLast) {
+          const stateText = stLast[2].trim();
+          const roundNum = stLast[1] || "";
+          console.log("[NarrativeAgent] F主：从<summary>提取状态追踪 (第" + roundNum + "轮, " + stateText.length + " chars)");
+          return "[第" + roundNum + "轮]状态追踪：\n" + stateText;
         }
       }
       // 只查最后一条 AI 消息，找不到就返回 null（交给 E 兜底）
