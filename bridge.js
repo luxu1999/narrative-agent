@@ -55,9 +55,32 @@ export class SillyTavernBridge {
       return;
     }
 
-    console.log("[NarrativeAgent] MESSAGE_DELETED, newChatLength:", newChatLength,
-      "turnCounter:", this.orchestrator.turnCounter, "— relay模式下聊天结构已变更，部分删除不触发回退");
-    this.orchestrator.invalidatePrefetch();
+    // 删除消息后回滚到最新完整轮次的 checkpoint：
+    // 状态追踪/摘要条目存于 summaryStore + checkpoint，回滚后随消息一并回到被删前的轮次，
+    // 避免出现「#103 的状态错位到 #102」的情况（与 WST 独立快照模型的本质区别）
+    try {
+      const ctx = getSTContext();
+      const rawChat = ctx?.chat || [];
+      const { turns } = this.orchestrator._extractTurnHistoryFromChat(rawChat);
+      let maxTurn = 0;
+      for (const t of turns) {
+        if (t.turnNum != null && t.turnNum > maxTurn) maxTurn = t.turnNum;
+      }
+      // 仅当最新完整轮次确实减少时才回滚（删的是尾部消息）；
+      // 删除历史中间消息不影响最新轮次，只失效缓存即可
+      if (maxTurn < this.orchestrator.turnCounter) {
+        console.log("[NarrativeAgent] MESSAGE_DELETED, newChatLength:", newChatLength,
+          "最新完整轮次:", maxTurn, "< turnCounter:", this.orchestrator.turnCounter, "→ 回滚到该轮次 checkpoint");
+        this.orchestrator.rollbackToTurn(maxTurn);
+      } else {
+        console.log("[NarrativeAgent] MESSAGE_DELETED, newChatLength:", newChatLength,
+          "最新完整轮次:", maxTurn, "未减少，仅失效预取缓存");
+        this.orchestrator.invalidatePrefetch();
+      }
+    } catch (e) {
+      console.warn("[NarrativeAgent] MESSAGE_DELETED 回滚失败，仅失效预取缓存:", e.message);
+      this.orchestrator.invalidatePrefetch();
+    }
   }
 
   _onPromptReady(data) {

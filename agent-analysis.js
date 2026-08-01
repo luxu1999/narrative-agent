@@ -31,6 +31,11 @@ export async function runMergedAnalysisAgent(ctx) {
   userContent += `<narrative_output>\n${ctx.narrativeText}\n</narrative_output>\n\n`;
   userContent += `<events_extracted>\n${eventsText}\n</events_extracted>\n\n`;
   userContent += `<state_summary>\n${ctx.stateSummary}\n</state_summary>\n\n`;
+  if (ctx.stateTracking && ctx.stateTracking.trim()) {
+    userContent += `<state_tracking>\n${ctx.stateTracking}\n</state_tracking>\n\n`;
+  } else {
+    userContent += `<state_tracking>（无，首次初始化状态）</state_tracking>\n\n`;
+  }
   if (ctx.changedPatches && ctx.changedPatches.trim()) {
     userContent += `<world_state_changes>\n${ctx.changedPatches}\n</world_state_changes>\n\n`;
   }

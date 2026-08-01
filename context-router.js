@@ -56,13 +56,14 @@ export class ContextRouter {
     };
   }
 
-  buildMergedAnalysisContext(narrativeText, userInput, turnId, stateSummary) {
+  buildMergedAnalysisContext(narrativeText, userInput, turnId, stateSummary, stateTracking) {
     return {
       turnId: turnId || "",
       events: [],
       userInput,
       narrativeText,
       stateSummary: stateSummary || this.stateManager.getSummary(),
+      stateTracking: stateTracking || this.summaryStore.getLatestStateTracking() || "",
       changedPatches: "",
       postPipelineToolSuffix: "",
     };
