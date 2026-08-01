@@ -102,6 +102,11 @@ const IMPORTANCE_KEYWORDS = [
   { re: /死[亡去]|丧命|逝世|去世|牺牲|杀死|杀害|处死/, weight: 100 },
   { re: /失去|丧失|永别|再也.*见不到|不复存在/, weight: 90 },
   { re: /人生.*改变|改变.*人生|命运.*转折|生命.*转折/, weight: 85 },
+  // 性格/心态改变事件（按改变程度分级）：
+  { re: /性格大变|性情大变|性格转变|性格改变|性情改变|性格突变|判若两人|换了一个人/, weight: 90 },   // 性格彻底改变（开朗→沉默等）
+  { re: /变得沉默|沉默寡言|郁郁寡欢|消沉|萎靡|一蹶不振|自暴自弃|变得冷漠|不再说笑|笑容消失/, weight: 85 }, // 明显性格转变（沉默寡言等）
+  { re: /心态变化|心理变化|心态转变|心性变化|心境变化|心态崩塌|心态崩溃/, weight: 80 },                 // 心态明显变化
+  { re: /蜕变|脱胎换骨|涅槃|重获新生|破茧成蝶|走出阴影|振作|重拾信心|心结解开/, weight: 75 },           // 积极心态转变
   { re: /觉醒|发现.*能力|获得.*力量|突破.*极限|领悟/, weight: 80 },
   { re: /第一次|初次|破处|初夜|初吻|首次/, weight: 75 },
   { re: /结婚|离婚|订婚|分手|求婚|表白|告白/, weight: 70 },
@@ -203,7 +208,12 @@ export function mergeMemories(oldMemories, newMemories) {
     }
     // 取舍：按分数降序，每角色最多保留最重要的 6 条
     combined.sort((a, b) => b.score - a.score);
-    merged[ch] = combined.slice(0, 6).map(item => item.text);
+    merged[ch] = combined.slice(0, 6).map(item => {
+      // 字数限制：每条记忆 ≤20 字（截断保护，防止 AI 超长）
+      let t = item.text;
+      if (t.length > 20) t = t.substring(0, 20);
+      return t;
+    });
   }
   return merged;
 }
