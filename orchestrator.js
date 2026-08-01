@@ -240,22 +240,41 @@ export class Orchestrator {
     this._isRunning = true;
     this._chat = chat;
 
-    // 后台注入：将最新状态追踪拼到用户消息后面，形成消息包发给 AI（用户无感知）
-    // F 为主（bridge 从最新 AI 消息提取），E 兜底（summaryStore 最新条目）
-    if (!isRegeneration && this._injectedStateTracking) {
-      const injected = this._injectedStateTracking;
-      this._injectedStateTracking = null; // 一次性消费
-      // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
-      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【以上为当前世界状态，时间/区域/服饰/在场角色等初始信息必须完全参照，禁止与之矛盾】";
-      console.log("[NarrativeAgent] ✅ 状态追踪已拼入用户消息包 (" + injected.length + " chars)");
-    }
-
     let turnId;
     if (isRegeneration) {
       turnId = `turn_${String(this.turnCounter).padStart(3, "0")}`;
       await this._rollbackToCheckpoint(turnId);
-    } else {
+        } else {
       turnId = `turn_${String(this.turnCounter + 1).padStart(3, "0")}`;
+    }
+    // 后台注入$4：将最新状态追踪拼到用户消息后面，形成消息包发给 AI（用户无感知）
+    // F 为主（bridge 从最新 AI 消息提取），E 兜底（summaryStore 最新条目）
+    // 注意：regenerate 也执行注入（用户可能手动编辑过消息正文，F主提取的是编辑后的事实）
+    // 位置：必须在 rollbackToCheckpoint 之后 — rollback 会重置 summaryStore 为 checkpoint 旧值，
+    //       注入后的写回才能覆盖旧值，保证 merged-analysis 读到用户编辑后的状态
+    if (this._injectedStateTracking) {
+      const injected = this._injectedStateTracking;
+      this._injectedStateTracking = null; // 一次性消费
+      // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
+      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【以上为当前世界状态，时间/区域/服饰/在场角色等初始信息必须完全参照，禁止与之矛盾】";
+      // 关键：将注入的状态同步写回 summaryStore 最新条目（覆盖 checkpoint 恢复的旧值）
+      try {
+        const store = this.summaryStore;
+        if (store && store._entries && store._entries.length > 0) {
+          for (let i = store._entries.length - 1; i >= 0; i--) {
+            if (store._entries[i].includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
+              store._entries[i] = injected;
+              break;
+            }
+          }
+        } else if (store && store._entries) {
+          store._entries.push(injected);
+        }
+        console.log("[NarrativeAgent] ✅ 注入状态已同步写回 summaryStore");
+      } catch (syncErr) {
+        console.warn("[NarrativeAgent] 注入状态写回 summaryStore 失败:", syncErr.message);
+      }
+      console.log("[NarrativeAgent] ✅ 状态追踪已拼入用户消息包 (" + injected.length + " chars)");
     }
 
     if (!isRegeneration && !this._mvuInitialized) {
