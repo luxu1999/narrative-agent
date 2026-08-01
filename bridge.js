@@ -46,6 +46,41 @@ export class SillyTavernBridge {
     console.log("[NarrativeAgent] GENERATION_STARTED, type:", type);
   }
 
+  // 从最新AI消息正文提取状态追踪段（F主）：查找 [第N轮]状态追踪： 到 结尾/下一个[第N轮] 之间
+  _extractLatestStateTrackingFromChat(chat) {
+    if (!chat || !Array.isArray(chat) || chat.length === 0) return null;
+    // 从后往前找最后一条 AI 消息
+    for (let i = chat.length - 1; i >= 0; i--) {
+      const msg = chat[i];
+      if (!msg || msg.is_user) continue;
+      const text = (msg.mes || msg.content || "").trim();
+      if (!text) continue;
+      // 状态追踪段：从 [第N轮]状态追踪： 开始
+      const re = /\[第\s*\d+\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/;
+      const m = text.match(re);
+      if (m && m[1] && m[1].trim()) {
+        const stateText = m[1].trim();
+        console.log("[NarrativeAgent] F主：从最新AI消息提取状态追踪 (" + stateText.length + " chars)");
+        return "[第N轮]状态追踪：\n" + stateText;
+      }
+      // 兼容 <summary> 块内提取
+      const sumRe = /<summary>([\s\S]*?)<\/summary>/i;
+      const sm = text.match(sumRe);
+      if (sm && sm[1]) {
+        const stRe = /\[第\s*\d+\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/;
+        const stm = sm[1].match(stRe);
+        if (stm && stm[1] && stm[1].trim()) {
+          const stateText = stm[1].trim();
+          console.log("[NarrativeAgent] F主：从<summary>提取状态追踪 (" + stateText.length + " chars)");
+          return "[第N轮]状态追踪：\n" + stateText;
+        }
+      }
+      // 只查最后一条 AI 消息，找不到就返回 null（交给 E 兜底）
+      break;
+    }
+    return null;
+  }
+
   _onMessageDeleted(newChatLength) {
     if (!this.enabled || this.isPipelineRunning) return;
 
@@ -105,6 +140,23 @@ export class SillyTavernBridge {
     }
 
     this._savedUserInput = getLatestUserInput(rawChat);
+
+    // ===== 后台注入状态追踪（F主+E兜底）：用户发送时，从最新AI消息提取状态追踪拼入用户消息 =====
+    try {
+      const latestTracking = this._extractLatestStateTrackingFromChat(rawChat);
+      if (latestTracking) {
+        this.orchestrator.setInjectedStateTracking(latestTracking);
+      } else {
+        // E兜底：消息提取不到时用 summaryStore 最新条目
+        const fallback = this.orchestrator.summaryStore?.getLatestStateTracking?.();
+        if (fallback) {
+          this.orchestrator.setInjectedStateTracking(fallback);
+          console.log("[NarrativeAgent] 状态追踪注入：E兜底 summaryStore");
+        }
+      }
+    } catch (injErr) {
+      console.warn("[NarrativeAgent] 状态追踪注入失败:", injErr.message);
+    }
     console.log("[NarrativeAgent] 已保存用户输入:", this._savedUserInput?.substring(0, 80), "长度:", this._savedUserInput?.length);
 
     const { turns } = this.orchestrator._extractTurnHistoryFromChat(rawChat);

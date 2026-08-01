@@ -150,6 +150,24 @@ export class Orchestrator {
     this.toolExecutor = new ToolExecutor();
     this._prefetchedStateSummary = null;
     this._prefetchedMvuData = null;
+    this._injectedStateTracking = null; // 用户发送时后台注入的最新状态追踪（F主+E兜底）
+  }
+
+  // 后台注入最新状态追踪：用户点击发送后、pipeline 构建前调用
+  setInjectedStateTracking(text) {
+    this._injectedStateTracking = (text && String(text).trim()) ? String(text).trim() : null;
+    if (this._injectedStateTracking) {
+      console.log("[NarrativeAgent] 后台注入状态追踪 (" + this._injectedStateTracking.length + " chars)");
+    }
+  }
+
+  clearInjectedStateTracking() {
+    this._injectedStateTracking = null;
+  }
+
+  // 取当前注入的状态追踪（无则返回 null）
+  getInjectedStateTracking() {
+    return this._injectedStateTracking;
   }
 
   setPresetContext(ctx) {
@@ -220,6 +238,16 @@ export class Orchestrator {
     if (this._isRunning) throw new Error("Pipeline already running");
     this._isRunning = true;
     this._chat = chat;
+
+    // 后台注入：将最新状态追踪拼到用户消息后面，形成消息包发给 AI（用户无感知）
+    // F 为主（bridge 从最新 AI 消息提取），E 兜底（summaryStore 最新条目）
+    if (!isRegeneration && this._injectedStateTracking) {
+      const injected = this._injectedStateTracking;
+      this._injectedStateTracking = null; // 一次性消费
+      // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
+      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【以上为当前世界状态，时间/区域/服饰/在场角色等初始信息必须完全参照，禁止与之矛盾】";
+      console.log("[NarrativeAgent] ✅ 状态追踪已拼入用户消息包 (" + injected.length + " chars)");
+    }
 
     let turnId;
     if (isRegeneration) {
