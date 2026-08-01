@@ -7,6 +7,7 @@ import { runMergedAnalysisAgent } from "./agent-analysis.js";
 import { getMvuStateSummary } from "./mvu.js";
 import { rollDice } from "./dice.js";
 import { parseTextToVariables, isApiFailure } from "./utils.js";
+import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking } from "./parser.js";
 import { DEFAULT_CONFIG, CANONICAL_CONTEXT_ORDER } from "./constants.js";
 
 export class ToolExecutor {
@@ -194,7 +195,7 @@ export class Orchestrator {
       this.stateManager.applyEvents(merged.events);
 
       if (merged.summary_entries.length > 0) {
-        this.summaryStore.appendEntries(merged.summary_entries);
+        this.summaryStore.appendEntries(this._mergeStateTrackingMemories(merged.summary_entries));
       }
 
       this.fileManager.saveCheckpoint(turnId, this.stateManager.toDict(), this.summaryStore.toDict());
@@ -453,7 +454,7 @@ export class Orchestrator {
       applicationResult = this.stateManager.applyEvents(merged.events);
 
       if (merged.summary_entries.length > 0) {
-        this.summaryStore.appendEntries(merged.summary_entries);
+        this.summaryStore.appendEntries(this._mergeStateTrackingMemories(merged.summary_entries));
       }
 
       if (dependent.length > 0) {
@@ -476,7 +477,7 @@ export class Orchestrator {
       applicationResult = this.stateManager.applyEvents(merged.events);
 
       if (merged.summary_entries.length > 0) {
-        this.summaryStore.appendEntries(merged.summary_entries);
+        this.summaryStore.appendEntries(this._mergeStateTrackingMemories(merged.summary_entries));
       }
 
       if (postPipelineTools.length > 0) {
@@ -806,7 +807,7 @@ export class Orchestrator {
       const applicationResult = this.stateManager.applyEvents(merged.events);
 
       if (merged.summary_entries.length > 0) {
-        this.summaryStore.appendEntries(merged.summary_entries);
+        this.summaryStore.appendEntries(this._mergeStateTrackingMemories(merged.summary_entries));
       }
 
       this.fileManager.saveCheckpoint(turnId, this.stateManager.toDict(), this.summaryStore.toDict());
@@ -911,7 +912,7 @@ export class Orchestrator {
     const applicationResult = this.stateManager.applyEvents(merged.events);
 
     if (merged.summary_entries.length > 0) {
-      this.summaryStore.appendEntries(merged.summary_entries);
+      this.summaryStore.appendEntries(this._mergeStateTrackingMemories(merged.summary_entries));
     }
 
     const llmToolOutputs = [];
@@ -1238,6 +1239,34 @@ export class Orchestrator {
     }
 
     console.log("[NarrativeAgent] Rolled back to turn:", targetTurn);
+  }
+
+  // 长期记忆保障：合并上一轮与新一轮状态追踪条目的重要记忆点
+  // 每角色最多 6 条；即使本轮完全没有新记忆，上一轮记忆也完整保留（不依赖 AI 自觉复制）
+  _mergeStateTrackingMemories(newEntries) {
+    if (!Array.isArray(newEntries) || newEntries.length === 0) return newEntries;
+    const out = [];
+    const prevTracking = this.summaryStore.getLatestStateTracking();
+    const prevMemories = prevTracking ? extractMemoriesFromTracking(prevTracking) : {};
+    let prevUsed = false;
+    for (const entry of newEntries) {
+      if (typeof entry !== "string" || !entry.includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
+        out.push(entry);
+        continue;
+      }
+      // 本轮 AI 输出的记忆点
+      const newMemories = extractMemoriesFromTracking(entry);
+      // 合并：旧记忆完整保留 + 新记忆优先，每角色 ≤6 条
+      const merged = mergeMemories(prevUsed ? {} : prevMemories, newMemories);
+      // 若 AI 完全没有输出记忆点，用上一轮记忆整体补回
+      const finalMemories = (Object.keys(merged).length === 0) && !prevUsed
+        ? prevMemories
+        : merged;
+      const cleaned = replaceMemoriesInTracking(entry, finalMemories);
+      out.push(cleaned);
+      prevUsed = true;
+    }
+    return out;
   }
 
   switchToChat(stateManager, summaryStore, fileManager) {
