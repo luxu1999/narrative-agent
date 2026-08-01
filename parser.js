@@ -97,6 +97,39 @@ function stripTrailingTurnLines(entries) {
 }
 
 // ==================== 重要记忆点长期记忆保障 ====================
+// 重要性评分关键词（移植自 WST，用于记忆取舍：每角色只保留最重要的 6 条）
+const IMPORTANCE_KEYWORDS = [
+  { re: /死[亡去]|丧命|逝世|去世|牺牲|杀死|杀害|处死/, weight: 100 },
+  { re: /失去|丧失|永别|再也.*见不到|不复存在/, weight: 90 },
+  { re: /人生.*改变|改变.*人生|命运.*转折|生命.*转折/, weight: 85 },
+  { re: /觉醒|发现.*能力|获得.*力量|突破.*极限|领悟/, weight: 80 },
+  { re: /第一次|初次|破处|初夜|初吻|首次/, weight: 75 },
+  { re: /结婚|离婚|订婚|分手|求婚|表白|告白/, weight: 70 },
+  { re: /决定.*重要|重大.*决定|选择.*道路|抉择/, weight: 65 },
+  { re: /受伤|重伤|濒死|险些.*死|差点.*死|遇难/, weight: 60 },
+  { re: /背叛|出卖|欺骗|被.*骗|利用/, weight: 60 },
+  { re: /怀孕|生子|产子|流产|堕胎|生下/, weight: 55 },
+  { re: /崩溃|绝望|无法.*接受|精神.*摧毁|心理.*阴影/, weight: 50 },
+  { re: /永远.*记住|铭记|终生难忘|刻骨铭心|永生难忘/, weight: 45 },
+  { re: /亲人|父母|母亲|父亲|兄妹|姐弟|子女|孩子|家庭/, weight: 35 },
+  { re: /拯救|拯救者|救命之恩|救了/, weight: 35 },
+  { re: /毁灭|摧毁|破坏|覆灭|灭亡/, weight: 35 },
+];
+
+// 记忆重要性评分：关键词命中加权（主） + 长度微加成（上限 5 分）
+// 关键词权重已足够区分（100=死亡类 / 75=第一次类 / 35=救命类 / 0=日常）
+// 长度加成只做微调，避免普通长句盖过真正的重大事件
+function scoreMemory(memory) {
+  if (!memory) return 0;
+  let score = 0;
+  for (let i = 0; i < IMPORTANCE_KEYWORDS.length; i++) {
+    if (IMPORTANCE_KEYWORDS[i].re.test(memory)) score += IMPORTANCE_KEYWORDS[i].weight;
+  }
+  score += Math.min(String(memory).length * 0.1, 5);
+  return score;
+}
+
+
 // 目的：确保每个角色最多保留 6 条重要记忆，且记忆不依赖最新消息——
 //      即使本轮完全没有新记忆，上一轮的全部记忆也必须完整保留（代码层合并，不依赖 AI 自觉）
 
@@ -158,17 +191,19 @@ export function mergeMemories(oldMemories, newMemories) {
     const newList = Array.isArray(newMemories?.[ch]) ? newMemories[ch] : [];
     const seen = new Set();
     const combined = [];
-    // 新记忆优先（最新事件放前面）
+    // 新记忆优先收集（标记得分加成：新发生的事件 AI 认为值得记录，给予保底优势）
     for (const m of newList) {
       const t = String(m).trim();
-      if (t && !seen.has(t)) { seen.add(t); combined.push(t); }
+      if (t && !seen.has(t)) { seen.add(t); combined.push({ text: t, score: scoreMemory(t) + 20 }); }
     }
-    // 旧记忆补充（保留长期记忆）
+    // 旧记忆补充（无加成）
     for (const m of oldList) {
       const t = String(m).trim();
-      if (t && !seen.has(t)) { seen.add(t); combined.push(t); }
+      if (t && !seen.has(t)) { seen.add(t); combined.push({ text: t, score: scoreMemory(t) }); }
     }
-    merged[ch] = combined.slice(0, 6); // 每角色最多 6 条
+    // 取舍：按分数降序，每角色最多保留最重要的 6 条
+    combined.sort((a, b) => b.score - a.score);
+    merged[ch] = combined.slice(0, 6).map(item => item.text);
   }
   return merged;
 }
