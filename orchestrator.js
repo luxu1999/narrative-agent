@@ -151,6 +151,7 @@ export class Orchestrator {
     this._prefetchedStateSummary = null;
     this._prefetchedMvuData = null;
     this._injectedStateTracking = null; // 用户发送时后台注入的最新状态追踪（F主+E兜底）
+    this.currentChatId = null; // 当前绑定的聊天 ID（switchToChat 时同步，供注入归属校验）
   }
 
   // 后台注入最新状态追踪：用户点击发送后、pipeline 构建前调用
@@ -1297,10 +1298,12 @@ export class Orchestrator {
     return out;
   }
 
-  switchToChat(stateManager, summaryStore, fileManager) {
+  switchToChat(stateManager, summaryStore, fileManager, chatId) {
     this.stateManager = stateManager;
     this.summaryStore = summaryStore;
     this.fileManager = fileManager;
+    // 同步当前聊天 ID（归属校验用）：优先显式传入，否则从 fileManager.basePath 推断
+    this.currentChatId = chatId || (fileManager && fileManager.basePath ? fileManager.basePath.replace("conversations/", "") : null);
     this.turnCounter = 0;
     this._mvuInitialized = false;
     this._isRunning = false;

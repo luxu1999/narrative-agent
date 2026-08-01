@@ -1,4 +1,4 @@
-import { getSTContext, extractPresetContext, getLatestUserInput, isApiFailure } from "./utils.js";
+import { getSTContext, extractPresetContext, getLatestUserInput, isApiFailure, getConversationId } from "./utils.js";
 import { PLACEHOLDER } from "./constants.js";
 
 export class SillyTavernBridge {
@@ -142,16 +142,27 @@ export class SillyTavernBridge {
     this._savedUserInput = getLatestUserInput(rawChat);
 
     // ===== 后台注入状态追踪（F主+E兜底）：用户发送时，从最新AI消息提取状态追踪拼入用户消息 =====
+    // 方案3+1：注入前校验聊天归属 — 新建聊天/切换窗口期 orchestrator 可能仍挂着旧聊天 store，
+    // 归属不一致时禁止注入（新聊天应从零开始），避免跨聊天污染
     try {
-      const latestTracking = this._extractLatestStateTrackingFromChat(rawChat);
-      if (latestTracking) {
-        this.orchestrator.setInjectedStateTracking(latestTracking);
+      const curChatId = getConversationId();
+      const boundChatId = this.orchestrator.currentChatId;
+      const chatMatch = boundChatId && (String(boundChatId) === String(curChatId));
+      if (!chatMatch) {
+        console.log("[NarrativeAgent] ⛔ 聊天归属不匹配，跳过状态追踪注入 (cur=" + curChatId + ", bound=" + boundChatId + ")");
+        this.orchestrator.clearInjectedStateTracking();
       } else {
-        // E兜底：消息提取不到时用 summaryStore 最新条目
-        const fallback = this.orchestrator.summaryStore?.getLatestStateTracking?.();
-        if (fallback) {
-          this.orchestrator.setInjectedStateTracking(fallback);
-          console.log("[NarrativeAgent] 状态追踪注入：E兜底 summaryStore");
+        // F主：从最新AI消息正文提取
+        const latestTracking = this._extractLatestStateTrackingFromChat(rawChat);
+        if (latestTracking) {
+          this.orchestrator.setInjectedStateTracking(latestTracking);
+        } else {
+          // E兜底：消息提取不到时用 summaryStore 最新条目（已确认归属一致）
+          const fallback = this.orchestrator.summaryStore?.getLatestStateTracking?.();
+          if (fallback) {
+            this.orchestrator.setInjectedStateTracking(fallback);
+            console.log("[NarrativeAgent] 状态追踪注入：E兜底 summaryStore");
+          }
         }
       }
     } catch (injErr) {

@@ -82,7 +82,7 @@ function installChatChangeHandler() {
     const newSummaryStore = loadOrCreateSummary(newChatId);
     const newFileManager = new FileManager(newChatId);
 
-    orchestrator.switchToChat(newStateManager, newSummaryStore, newFileManager);
+    orchestrator.switchToChat(newStateManager, newSummaryStore, newFileManager, newChatId);
     await orchestrator.worldInfoResolver.buildFormattingSet();
     currentChatId = newChatId;
     refreshStateDisplay();
@@ -133,7 +133,7 @@ async function registerSettingsPane() {
         const stateManager = loadOrCreateState(chatId);
         const summaryStore = loadOrCreateSummary(chatId);
         const fileManager = new FileManager(chatId);
-        orchestrator.switchToChat(stateManager, summaryStore, fileManager);
+        orchestrator.switchToChat(stateManager, summaryStore, fileManager, chatId);
         currentChatId = chatId;
         (async () => {
           if (config.state.autoSyncWorldInfo) await orchestrator.worldInfoResolver.syncToStateManager();
