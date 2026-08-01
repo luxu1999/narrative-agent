@@ -66,29 +66,32 @@ export function parseMergedOutput(rawText) {
   }
 
   // 兜底：AI 可能把「叙事要点」误附在状态追踪条目（重要记忆点）之后，
-  // 此时将该条目末尾的 [第N轮]… 行拆分为独立条目，避免污染重要记忆点
-  result.summary_entries = splitTrailingTurnEntries(result.summary_entries);
+  // 此时截断丢弃该条目中第一个误附的 [第N轮]… 行及其后内容（状态追踪是唯一摘要条目）
+  result.summary_entries = stripTrailingTurnLines(result.summary_entries);
   return result;
 }
 
-// 将状态追踪条目末尾误附的 [第N轮]叙事要点 行拆分为独立条目
-// 规则：仅当条目以「状态追踪：」开头/包含时执行拆分；末尾从后往前找第一个 [第N轮] 行
-function splitTrailingTurnEntries(entries) {
+// 截断状态追踪条目末尾误附的 [第N轮]叙事要点 行（直接丢弃，不再拆成独立条目）
+// 规则：仅当条目以「状态追踪：」包含时执行截断；找到第一个 [第N轮] 行（排除首行）即截断
+function stripTrailingTurnLines(entries) {
   if (!Array.isArray(entries)) return entries;
   const out = [];
   for (const e of entries) {
-    if (typeof e !== "string" || !e.includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) { out.push(e); continue; }
+    if (typeof e !== "string" || !e.includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
+      // 非状态追踪条目：若是 [第N轮]叙事要点 等残留条目，直接丢弃
+      if (/^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/.test(e)) continue;
+      out.push(e);
+      continue;
+    }
     const lines = e.split("\n");
     // 找第一个误附的 [第N轮] 行（排除条目自身首行 [第N轮]状态追踪：）
-    let splitIdx = -1;
+    let cutIdx = -1;
     for (let i = 1; i < lines.length; i++) {
-      if (/^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/.test(lines[i])) { splitIdx = i; break; }
+      if (/^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/.test(lines[i])) { cutIdx = i; break; }
     }
-    if (splitIdx <= 0) { out.push(e); continue; } // 没有误附，原样保留
-    const head = lines.slice(0, splitIdx).join("\n").trim();
-    const tail = lines.slice(splitIdx).join("\n").trim();
+    if (cutIdx <= 0) { out.push(e); continue; } // 没有误附，原样保留
+    const head = lines.slice(0, cutIdx).join("\n").trim();
     if (head) out.push(head);
-    if (tail) out.push(tail);
   }
   return out;
 }
