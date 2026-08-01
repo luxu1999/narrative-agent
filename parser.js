@@ -68,7 +68,31 @@ export function parseMergedOutput(rawText) {
   // 兜底：AI 可能把「叙事要点」误附在状态追踪条目（重要记忆点）之后，
   // 此时截断丢弃该条目中第一个误附的 [第N轮]… 行及其后内容（状态追踪是唯一摘要条目）
   result.summary_entries = stripTrailingTurnLines(result.summary_entries);
+  // 输出侧兜底：丢弃非标准格式的自由状态块
+  // （以"时间：/地点："等开头但无 [第N轮]状态追踪： 前缀的自由格式，AI自由发挥产生，禁止进入 summaryStore）
+  result.summary_entries = dropNonStandardStateBlocks(result.summary_entries);
   return result;
+}
+
+// 丢弃非标准格式状态块：含状态字段但无 [第N轮]状态追踪： 前缀的条目直接丢弃
+// 判定：条目以"时间："开头 或 包含"地点：""在场角色：""当前状态""处女膜状态""做爱次数""回溯魔法""好感度："等自由格式标记
+function dropNonStandardStateBlocks(entries) {
+  if (!Array.isArray(entries)) return entries;
+  const out = [];
+  for (const e of entries) {
+    if (typeof e !== "string") { out.push(e); continue; }
+    const hasStandardPrefix = /^\s*\[\u7b2c\s*\d+\s*\u8f6e\]\s*\u72b6\u6001\u8ffd\u8e2a[\uff1a:]/.test(e);
+    if (hasStandardPrefix) { out.push(e); continue; }
+    // 自由格式判定
+    const freeMarkers = [/地点[\uff1a:]/, /在场角色[\uff1a:]/, /当前状态/, /处女膜状态/, /做爱次数/, /回溯魔法/, /好感度[\uff1a:]/];
+    const looksLikeState = /^\s*\u65f6\u95f4[\uff1a:]/.test(e) || freeMarkers.some(re => re.test(e));
+    if (looksLikeState) {
+      console.warn("[NA] 丢弃非标准格式状态块:", e.substring(0, 50).replace(/\n/g, " "));
+      continue;
+    }
+    out.push(e);
+  }
+  return out;
 }
 
 // 截断状态追踪条目末尾误附的 [第N轮]叙事要点 行（直接丢弃，不再拆成独立条目）
