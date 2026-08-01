@@ -256,7 +256,7 @@ export class Orchestrator {
       const injected = this._injectedStateTracking;
       this._injectedStateTracking = null; // 一次性消费
       // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
-      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【以上为当前世界状态的参考信息：时间/区域/服饰/在场角色等初始设定必须完全参照，禁止与之矛盾。此状态块仅供你理解当前事实，严禁在回复正文中复述、输出或改写它——状态块会由系统在正文之后自动追加，你只需在正文中自然地体现这些设定即可。】";
+      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【当前世界状态，必须完全参照，禁止矛盾；仅供理解，严禁在正文复述输出（系统会自动追加状态块）】";
       // 关键：将注入的状态同步写回 summaryStore 最新条目（覆盖 checkpoint 恢复的旧值）
       try {
         const store = this.summaryStore;

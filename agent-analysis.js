@@ -33,6 +33,9 @@ export async function runMergedAnalysisAgent(ctx) {
   userContent += `<state_summary>\n${ctx.stateSummary}\n</state_summary>\n\n`;
   if (ctx.stateTracking && ctx.stateTracking.trim()) {
     userContent += `<state_tracking>\n${ctx.stateTracking}\n</state_tracking>\n\n`;
+  } else if (ctx.userInput && ctx.userInput.includes("<current_state>")) {
+    // 状态已随 <current_state> 注入 user_input（方案A去重后），以 user_input 中的为准
+    userContent += `<state_tracking>（以上一状态为准，见 <user_input> 中的 <current_state>）</state_tracking>\n\n`;
   } else {
     userContent += `<state_tracking>（无，首次初始化状态）</state_tracking>\n\n`;
   }

@@ -56,14 +56,22 @@ export class ContextRouter {
     };
   }
 
-  buildMergedAnalysisContext(narrativeText, userInput, turnId, stateSummary, stateTracking) {
+    buildMergedAnalysisContext(narrativeText, userInput, turnId, stateSummary, stateTracking) {
+    // 方案A：userInput 已含 <current_state>（v0.3.5 注入）时，不再重复取 summaryStore 状态追踪，
+    // 避免同一份状态在 merged-analysis 输入里出现两次（token 翻倍导致总结变慢）
+    // 显式传入 stateTracking 仍优先（调用方明确要求时）
+    let effectiveTracking = stateTracking;
+    if (!effectiveTracking) {
+      const hasInjectedState = typeof userInput === "string" && userInput.includes("<current_state>");
+      effectiveTracking = hasInjectedState ? "" : (this.summaryStore.getLatestStateTracking() || "");
+    }
     return {
       turnId: turnId || "",
       events: [],
       userInput,
       narrativeText,
       stateSummary: stateSummary || this.stateManager.getSummary(),
-      stateTracking: stateTracking || this.summaryStore.getLatestStateTracking() || "",
+      stateTracking: effectiveTracking,
       changedPatches: "",
       postPipelineToolSuffix: "",
     };
