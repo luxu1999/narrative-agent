@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.19",
-    "description": "多Agent叙事系统v0.3.19：正文剥离复述状态块(只保留summary标准状态)",
+    "version": "0.3.20",
+    "description": "多Agent叙事系统v0.3.20：修复剥离正则匹配不到在场角色+BUFF(Codex定位)",
     "author": "Lol1p0p",
     "tags": [
         "agent",

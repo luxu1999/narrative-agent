@@ -1371,7 +1371,7 @@ export class Orchestrator {
           continue;
         }
         // 状态块内、记忆段前的其他行（时间/区域/在场/好感度等字段）→ 跳过
-        if (/^(时间|区域|地点|在场角色|不在场角色|处女膜状态|做爱次数|当前好感度|身体外貌|回溯魔法|当前状态)[\uff1a:]/.test(l) || !l) {
+        if (/^(时间|区域|地点|在场角色(?:\+BUFF)?|不在场角色|处女膜状态|做爱次数|当前好感度|身体外貌|回溯魔法|当前状态)[\uff1a:]/.test(l) || !l) {
           continue;
         }
         // 意外行 → 结束状态块，保留该行
@@ -1383,7 +1383,7 @@ export class Orchestrator {
       if (!inStateBlock && /^时间[\uff1a:]/.test(l)) {
         let looksLikeState = false;
         for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-          if (/^(地点|在场角色|当前状态|好感度|处女膜状态|做爱次数|回溯魔法)[\uff1a:]/.test(lines[j].trim())) { looksLikeState = true; break; }
+          if (/^(地点|在场角色(?:\+BUFF)?|当前状态|好感度|处女膜状态|做爱次数|回溯魔法)[\uff1a:]/.test(lines[j].trim())) { looksLikeState = true; break; }
         }
         if (looksLikeState) {
           inStateBlock = true; // 复用状态块跳过逻辑（自由格式无重要记忆点，遇到非字段行即出）
