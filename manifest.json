@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.17",
-    "description": "多Agent叙事系统v0.3.17：修复双状态追踪(方案A'提取真实状态+去重拦截+轮次归一化)",
+    "version": "0.3.18",
+    "description": "多Agent叙事系统v0.3.18：修复ESM加载崩溃(多余花括号)",
     "author": "Lol1p0p",
     "tags": [
         "agent",
