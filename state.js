@@ -313,11 +313,10 @@ export class SummaryStore {
   getAllSummaries() { return this._entries.length > 0 ? this._entries.join("\n") : "\uff08\u5c1a\u65e0\u6545\u4e8b\u6458\u8981\uff09"; }
   getEntryCount() { return this._entries.length; }
   // 提取最新一条状态追踪条目（[第N轮]状态追踪：...），供 merged-analysis 作为上一状态输入
-  // 仅认标准格式（[第N轮]状态追踪： 前缀），跳过自由格式脏数据（如“地点：/在场角色：”等非标准格式）
   getLatestStateTracking() {
     for (let i = this._entries.length - 1; i >= 0; i--) {
       const e = this._entries[i];
-      if (e && typeof e === "string" && /^\s*\[\u7b2c\s*\d+\s*\u8f6e\]\s*\u72b6\u6001\u8ffd\u8e2a[\uff1a:]/.test(e)) return e;
+      if (e && e.includes("状态追踪：")) return e;
     }
     return null;
   }

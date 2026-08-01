@@ -57,34 +57,18 @@ export class ContextRouter {
   }
 
     buildMergedAnalysisContext(narrativeText, userInput, turnId, stateSummary, stateTracking) {
-    // 方案A'：userInput 已含 <current_state>（v0.3.5 注入）时，
-    // ① 从 userInput 提取 current_state 真实内容作为 stateTracking（merged-analysis 需要真实状态做演化基准）
-    // ② merged-analysis 的 userInput 剥离 <current_state> 段（避免同一份状态出现两次，token 翻倍）
-    // 写作引擎仍使用完整 userInput（功能1 不受影响）；显式传入 stateTracking 仍优先
+    // 方案A：userInput 已含 <current_state>（v0.3.5 注入）时，不再重复取 summaryStore 状态追踪，
+    // 避免同一份状态在 merged-analysis 输入里出现两次（token 翻倍导致总结变慢）
+    // 显式传入 stateTracking 仍优先（调用方明确要求时）
     let effectiveTracking = stateTracking;
-    let effectiveUserInput = userInput;
-    if (!effectiveTracking && typeof userInput === "string" && userInput.includes("<current_state>")) {
-      const csMatch = userInput.match(/<current_state>[\s\S]*?<\/current_state>[\s\S]*?（当前世界状态[^）]*）|(<current_state>[\s\S]*?<\/current_state>)/);
-      // 提取 current_state 内容
-      const csRe = /<current_state>\n([\s\S]*?)\n<\/current_state>/;
-      const m = userInput.match(csRe);
-      if (m && m[1] && m[1].trim()) {
-        effectiveTracking = m[1].trim();
-      } else {
-        effectiveTracking = this.summaryStore.getLatestStateTracking() || "";
-      }
-      // 剥离 <current_state> 段及跟随的说明文字（保留用户消息本身）
-      effectiveUserInput = userInput
-        .replace(/<current_state>[\s\S]*?<\/current_state>/g, "")
-        .replace(/\n*【当前世界状态[^】]*】/g, "")
-        .trim();
-    } else if (!effectiveTracking) {
-      effectiveTracking = this.summaryStore.getLatestStateTracking() || "";
+    if (!effectiveTracking) {
+      const hasInjectedState = typeof userInput === "string" && userInput.includes("<current_state>");
+      effectiveTracking = hasInjectedState ? "" : (this.summaryStore.getLatestStateTracking() || "");
     }
     return {
       turnId: turnId || "",
       events: [],
-      userInput: effectiveUserInput,
+      userInput,
       narrativeText,
       stateSummary: stateSummary || this.stateManager.getSummary(),
       stateTracking: effectiveTracking,
