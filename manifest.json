@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.22",
-    "description": "多Agent叙事系统v0.3.22：LLM调用超时+停止按钮可中断+fallback轻量降级(修复流水线长时间卡顿)",
+    "version": "0.3.23",
+    "description": "多Agent叙事系统v0.3.23：好感度覆盖所有已追踪角色(在场+不在场)，不在场角色好感度严格保留",
     "author": "Lol1p0p",
     "tags": [
         "agent",
