@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.24",
-    "description": "多Agent叙事系统v0.3.24：好感度字段更名角色好感度，列出在场+不在场所有角色好感度(回退v0.3.23复杂规则)",
+    "version": "0.3.25",
+    "description": "多Agent叙事系统v0.3.25：重要记忆点一条一事件/禁斜杠打包/滤性爱流水账 + 代码层斜杠拆分与分隔符截断",
     "author": "Lol1p0p",
     "tags": [
         "agent",

@@ -190,7 +190,7 @@ export function extractMemoriesFromTracking(entryText) {
     const m = line.match(/^[-\u2022\u25cf\u25c6\u25a0\u25b8\u25c2]?[ \t]*([^\uff1a:\n]{1,12})\uff1a\s*(.+)$/);
     if (!m) return false;
     const charName = m[1].trim();
-    const items = m[2].split(/[|\uff5c\u3001\n]/).map(s => s.trim()).filter(s => s && s !== "-" && s !== "\u2022");
+    const items = m[2].split(/[|\uff5c\u3001\uff0f\/\n]/).map(s => s.trim()).filter(s => s && s !== "-" && s !== "\u2022");
     if (charName && items.length > 0) {
       if (!memories[charName]) memories[charName] = [];
       for (const it of items) {
@@ -223,6 +223,21 @@ export function extractMemoriesFromTracking(entryText) {
   return memories;
 }
 
+// 记忆截断：优先在分隔符（/ ／ 、 | ｜）处断开，避免把一条记忆切成残句；无分隔符时硬截断
+function truncateMemory(text, maxLen) {
+  if (!text || text.length <= maxLen) return text;
+  const cut = text.slice(0, maxLen);
+  const lastSep = Math.max(
+    cut.lastIndexOf("\/"),
+    cut.lastIndexOf("\uff0f"),
+    cut.lastIndexOf("\u3001"),
+    cut.lastIndexOf("|"),
+    cut.lastIndexOf("\uff5c")
+  );
+  if (lastSep > 0) return text.slice(0, lastSep);
+  return cut;
+}
+
 // 合并两轮记忆：旧记忆完整保留 + 新记忆追加（去重），每角色最多 6 条
 // 新记忆插入到前面（优先保留最新），超过 6 条时丢弃最旧的
 export function mergeMemories(oldMemories, newMemories) {
@@ -249,10 +264,8 @@ export function mergeMemories(oldMemories, newMemories) {
     // 取舍：按分数降序，每角色最多保留最重要的 6 条
     combined.sort((a, b) => b.score - a.score);
     merged[ch] = combined.slice(0, 6).map(item => {
-      // 字数限制：每条记忆 ≤20 字（截断保护，防止 AI 超长）
-      let t = item.text;
-      if (t.length > 20) t = t.substring(0, 20);
-      return t;
+      // 字数限制：每条记忆 ≤20 字（分隔符感知截断，防止切出残句）
+      return truncateMemory(item.text, 20);
     });
   }
   return merged;
