@@ -226,3 +226,19 @@ export function isApiFailure(err) {
   if (msg.includes("请求可能被取消") || msg.includes("API错误")) return true;
   return false;
 }
+
+// 通用超时包装：超过 timeoutMs 未 settle 则 reject（错误带 .timeout=true 标记，供调用方区分）
+// 用于 MVU 等无法取消但可能挂起的调用，防止无限等待
+ export function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const e = new Error((label ? label + " " : "") + "操作超时(" + timeoutMs + "ms)");
+        e.timeout = true;
+        reject(e);
+      }, timeoutMs);
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}

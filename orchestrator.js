@@ -1,12 +1,12 @@
 import { StateManager, SummaryStore } from "./state.js";
 import { ContextRouter } from "./context-router.js";
-import { callLLM } from "./llm.js";
+import { callLLM, setCancelCheck } from "./llm.js";
 import { runPlanningAgent } from "./agent-planning.js";
 import { runWritingAgent, runMergedWritingAgent } from "./agent-writing.js";
 import { runMergedAnalysisAgent } from "./agent-analysis.js";
 import { getMvuStateSummary } from "./mvu.js";
 import { rollDice } from "./dice.js";
-import { parseTextToVariables, isApiFailure } from "./utils.js";
+import { parseTextToVariables, isApiFailure, withTimeout } from "./utils.js";
 import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking } from "./parser.js";
 import { DEFAULT_CONFIG, CANONICAL_CONTEXT_ORDER } from "./constants.js";
 
@@ -152,6 +152,8 @@ export class Orchestrator {
     this._prefetchedMvuData = null;
     this._injectedStateTracking = null; // 用户发送时后台注入的最新状态追踪（F主+E兜底）
     this.currentChatId = null; // 当前绑定的聊天 ID（switchToChat 时同步，供注入归属校验）
+    // 将停止按钮标志接入 LLM 调用层：卡在 generateRaw 内部时也能在 ~200ms 内响应停止
+    setCancelCheck(() => this._shouldCancel);
   }
 
   // 后台注入最新状态追踪：用户点击发送后、pipeline 构建前调用
@@ -325,7 +327,7 @@ export class Orchestrator {
     }
     if (typeof Mvu !== "undefined") {
       try {
-        const mvuData = await Mvu.getMvuData({ type: "message", message_id: "latest" });
+        const mvuData = await withTimeout(Mvu.getMvuData({ type: "message", message_id: "latest" }), 8000, "MVU读取");
         const mvuSummary = getMvuStateSummary(mvuData);
         if (mvuSummary && mvuSummary !== "（无 MVU 数据）" && mvuSummary !== "（空状态）") {
           return mvuSummary;
@@ -340,7 +342,7 @@ export class Orchestrator {
   async prefetchState() {
     if (typeof Mvu === "undefined") return;
     try {
-      const mvuData = await Mvu.getMvuData({ type: "message", message_id: "latest" });
+      const mvuData = await withTimeout(Mvu.getMvuData({ type: "message", message_id: "latest" }), 8000, "MVU预取");
       this._prefetchedMvuData = mvuData;
       this._prefetchedStateSummary = null;
       if (mvuData && mvuData.stat_data) {
@@ -826,18 +828,20 @@ export class Orchestrator {
   }
 
   async _fallbackPipeline(userInput, turnId) {
-    console.log("[NarrativeAgent] Using fallback pipeline");
+    console.log("[NarrativeAgent] Using fallback pipeline (轻量降级)");
     try {
       const fallbackGuide = { narrative_direction: "", key_points: [], tone: "中", pacing: "中", continuity_notes: [], tool_calls: [] };
-      const recentNarratives = this._getRecentTurns(3);
+      // 降级策略：比主流程更轻，增加在上下文超长/限流后成功的概率
+      // ① 最近只取 2 轮历史（主流程 3 轮）
+      const recentNarratives = this._getRecentTurns(2);
 
       const systemEntries = await this.worldInfoResolver.getConstantSystemEntries();
       const beforeCharEntries = await this.worldInfoResolver.getConstantBeforeCharEntries();
       const constantAfterCharEntries = await this.worldInfoResolver.getConstantAfterCharEntries();
       const stateSummary = await this._getStateSummary();
-      const selectiveEntries = await this.worldInfoResolver.getSelectiveActivatedEntries("", stateSummary);
-      const allWorldInfo3 = [...constantAfterCharEntries, ...selectiveEntries];
-      console.log(`[NA:WI:pipeline-fallback] 汇总: systemEntries=${systemEntries.length} beforeCharEntries=${beforeCharEntries.length} constantAfterChar=${constantAfterCharEntries.length} selective=${selectiveEntries.length} allWorldInfo3=${allWorldInfo3.length}`);
+      // ② 跳过选择性世界书条目（主流程 context 超长的最常见诱因），仅保留常驻条目
+      const allWorldInfo3 = [...constantAfterCharEntries];
+      console.log(`[NA:WI:pipeline-fallback] 降级汇总: systemEntries=${systemEntries.length} beforeCharEntries=${beforeCharEntries.length} constantAfterChar=${constantAfterCharEntries.length} selective=0(已跳过) allWorldInfo3=${allWorldInfo3.length}`);
 
       const writingCtx = {
         userPersona: this.userPersonaReader.getPersonaInfo(),
@@ -855,10 +859,15 @@ export class Orchestrator {
 
       this._cancelCheck();
 
-      this._cancelCheck();
-
-      const analysisCtx = this.contextRouter.buildMergedAnalysisContext(narrativeText, userInput, turnId, this.stateManager.getSummary());
-      const merged = await runMergedAnalysisAgent(analysisCtx);
+      // ③ 合并分析保留（小上下文，通常能成功）；失败时静默降级为空摘要，不再拉垮整个 fallback
+      let merged;
+      try {
+        const analysisCtx = this.contextRouter.buildMergedAnalysisContext(narrativeText, userInput, turnId, this.stateManager.getSummary());
+        merged = await runMergedAnalysisAgent(analysisCtx);
+      } catch (analysisErr) {
+        console.warn("[NarrativeAgent] fallback 合并分析失败，跳过事件提取与摘要压缩:", analysisErr.message);
+        merged = { events: [], summary_entries: [] };
+      }
       const applicationResult = this.stateManager.applyEvents(merged.events);
 
       if (merged.summary_entries.length > 0) {

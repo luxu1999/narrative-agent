@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.21",
-    "description": "多Agent叙事系统v0.3.21：身体外貌增加服装/姿势两要素 + 做爱次数终身累计永不归零(代码层只增不减保障)",
+    "version": "0.3.22",
+    "description": "多Agent叙事系统v0.3.22：LLM调用超时+停止按钮可中断+fallback轻量降级(修复流水线长时间卡顿)",
     "author": "Lol1p0p",
     "tags": [
         "agent",
