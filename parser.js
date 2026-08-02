@@ -216,7 +216,7 @@ export function extractMemoriesFromTracking(entryText) {
     if (!inMemSection) continue;
     // 遇到非记忆格式行（[第N轮] 开头 / 其他字段标签）→ 记忆段结束
     if (/^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/.test(line)) break;
-    if (/^\u65f6\u95f4|\u533a\u57df|\u5728\u573a\u89d2\u8272|\u4e0d\u5728\u573a\u89d2\u8272|\u5904\u5973\u819c|\u505a\u7231|\u5f53\u524d\u597d\u611f|\u8eab\u4f53\u5916\u8c8c/.test(line)) break;
+    if (/^\u65f6\u95f4|\u533a\u57df|\u5728\u573a\u89d2\u8272|\u4e0d\u5728\u573a\u89d2\u8272|\u5904\u5973\u819c|\u505a\u7231|(?:\u5f53\u524d\u597d\u611f|\u89d2\u8272\u597d\u611f)|\u8eab\u4f53\u5916\u8c8c/.test(line)) break;
     // 角色名：记忆内容（支持 - 前缀）
     addMemory(line);
   }
@@ -295,7 +295,7 @@ export function replaceMemoriesInTracking(entryText, memories) {
       const t = line.trim();
       // 记忆段结束：下一个字段标签 / [第N轮] 行
       if (!t || /^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/.test(t) ||
-          /^时间|区域|在场角色|不在场角色|处女膜|做爱|当前好感|身体外貌/.test(t)) {
+          /^时间|区域|在场角色|不在场角色|处女膜|做爱|(?:当前好感|角色好感)|身体外貌/.test(t)) {
         inMemSection = false;
         // 注意：这里不 push 当前行，由下面统一 push（避免重复）
       } else {

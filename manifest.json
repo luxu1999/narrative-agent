@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.23",
-    "description": "多Agent叙事系统v0.3.23：好感度覆盖所有已追踪角色(在场+不在场)，不在场角色好感度严格保留",
+    "version": "0.3.24",
+    "description": "多Agent叙事系统v0.3.24：好感度字段更名角色好感度，列出在场+不在场所有角色好感度(回退v0.3.23复杂规则)",
     "author": "Lol1p0p",
     "tags": [
         "agent",
