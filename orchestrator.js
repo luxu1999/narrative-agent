@@ -7,7 +7,7 @@ import { runMergedAnalysisAgent } from "./agent-analysis.js";
 import { getMvuStateSummary } from "./mvu.js";
 import { rollDice } from "./dice.js";
 import { parseTextToVariables, isApiFailure } from "./utils.js";
-import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking } from "./parser.js";
+import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking } from "./parser.js";
 import { DEFAULT_CONFIG, CANONICAL_CONTEXT_ORDER } from "./constants.js";
 
 export class ToolExecutor {
@@ -1298,11 +1298,13 @@ export class Orchestrator {
 
   // 长期记忆保障：合并上一轮与新一轮状态追踪条目的重要记忆点
   // 每角色最多 6 条；即使本轮完全没有新记忆，上一轮记忆也完整保留（不依赖 AI 自觉复制）
+  // 同时合并做爱次数：终身累计、只增不减（AI 误清零时以历史最大值为准补回）
   _mergeStateTrackingMemories(newEntries) {
     if (!Array.isArray(newEntries) || newEntries.length === 0) return newEntries;
     const out = [];
     const prevTracking = this.summaryStore.getLatestStateTracking();
     const prevMemories = prevTracking ? extractMemoriesFromTracking(prevTracking) : {};
+    const prevSexCounts = prevTracking ? extractSexCountsFromTracking(prevTracking) : {};
     let prevUsed = false;
     for (const entry of newEntries) {
       if (typeof entry !== "string" || !entry.includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
@@ -1317,7 +1319,12 @@ export class Orchestrator {
       const finalMemories = (Object.keys(merged).length === 0) && !prevUsed
         ? prevMemories
         : merged;
-      const cleaned = replaceMemoriesInTracking(entry, finalMemories);
+      let cleaned = replaceMemoriesInTracking(entry, finalMemories);
+      // 做爱次数累计保障：终身累计、只增不减
+      const sexCounts = mergeSexCounts(prevUsed ? {} : prevSexCounts, extractSexCountsFromTracking(entry));
+      if (Object.keys(sexCounts).length > 0) {
+        cleaned = replaceSexCountsInTracking(cleaned, sexCounts);
+      }
       out.push(cleaned);
       prevUsed = true;
     }

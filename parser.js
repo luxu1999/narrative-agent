@@ -308,3 +308,64 @@ export function replaceMemoriesInTracking(entryText, memories) {
   if (!memWritten && memSection) out.push(memSection);
   return out.join("\n");
 }
+
+// ==================== 做爱次数累计保障 ====================
+// 目的：做爱次数是终身累计数字（跨天/月/年永不归零），即使 AI 误清零也以历史最大值为准合并
+
+// 从状态追踪条目文本中提取「做爱次数」字段 → { 角色名: 次数 }
+// 支持格式：琴：0次、芭芭拉：3次；也支持单角色裸数字（0次 / 3）
+export function extractSexCountsFromTracking(entryText) {
+  const counts = {};
+  if (!entryText || typeof entryText !== "string") return counts;
+  const m = entryText.match(/做爱次数[：:][^\n]*/);
+  if (!m) return counts;
+  const raw = m[0].replace(/^做爱次数[：:]/, "").trim();
+  if (!raw || raw === "无" || raw === "无记录" || raw === "无性行为") return counts;
+  const parts = raw.split(/[、，,|；;\/]/).map(s => s.trim()).filter(Boolean);
+  for (const part of parts) {
+    const pm = part.match(/^([^：:]{1,12})[：:]\s*(\d+)\s*次?$/);
+    if (pm) {
+      counts[pm[1].trim()] = parseInt(pm[2], 10);
+      continue;
+    }
+    // 裸数字：0次 / 3 → 暂存（角色归属待定）
+    const bm = part.match(/^(\d+)\s*次?$/);
+    if (bm) counts.__bare__ = parseInt(bm[1], 10);
+  }
+  return counts;
+}
+
+// 合并做爱次数：每角色取新旧最大值（只增不减，杜绝归零）
+export function mergeSexCounts(oldCounts, newCounts) {
+  const merged = {};
+  const allChars = new Set([
+    ...Object.keys(oldCounts || {}),
+    ...Object.keys(newCounts || {}),
+  ]);
+  for (const ch of allChars) {
+    if (ch === "__bare__") continue;
+    const oldV = (oldCounts && typeof oldCounts[ch] === "number") ? oldCounts[ch] : 0;
+    const newV = (newCounts && typeof newCounts[ch] === "number") ? newCounts[ch] : 0;
+    merged[ch] = Math.max(oldV, newV);
+  }
+  // 裸数字归属：上一状态只有一个角色时，裸数字视为该角色的次数（如 0次 → 琴）
+  const bare = (newCounts && typeof newCounts.__bare__ === "number") ? newCounts.__bare__ : null;
+  if (bare !== null && Object.keys(merged).length === 1 && Object.keys(oldCounts || {}).length === 1) {
+    const ch = Object.keys(merged)[0];
+    merged[ch] = Math.max(merged[ch], bare);
+  }
+  return merged;
+}
+
+// 把合并后的做爱次数写回状态追踪条目（替换原「做爱次数」行）
+export function replaceSexCountsInTracking(entryText, counts) {
+  if (!entryText || typeof entryText !== "string") return entryText;
+  if (!counts || Object.keys(counts).length === 0) return entryText;
+  const names = Object.keys(counts);
+  // 仅当原行是「裸数字」格式（如 0次）且单角色时保持裸格式，其余一律用「角色：N次」命名格式（更稳健）
+  const named = names.length > 1 || !/^做爱次数[：:]\s*\d+\s*次?\s*$/.test(entryText);
+  const line = named
+    ? "做爱次数：" + names.map(n => n + "：" + counts[n] + "次").join("、")
+    : "做爱次数：" + counts[names[0]] + "次";
+  return entryText.replace(/做爱次数[：:][^\n]*/, line);
+}
