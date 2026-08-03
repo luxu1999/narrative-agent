@@ -1,32 +1,35 @@
 import { callLLM } from "./llm.js";
 import { WRITING_SYSTEM_SUFFIX, MERGED_WRITING_SYSTEM_SUFFIX } from "./constants.js";
-import { extractCharLimit } from "./utils.js";
+import { extractCharRange } from "./utils.js";
 
-// 解析本轮有效正文字数上限，优先级：本轮用户输入 > 预设（system+user）> 面板默认值
-// 返回 >0 表示有字数限制，0 表示不限制
-export function resolveCharLimit(ctx) {
-  const candidates = [];
+// 解析本轮有效正文字数区间，优先级：本轮用户输入 > 预设（system+user）> 面板默认值
+// 返回 { min, max } 或 null（null = 不限制）
+export function resolveCharRange(ctx) {
   if (ctx.userInput) {
-    const n = extractCharLimit(ctx.userInput);
-    if (n) candidates.push(n);
+    const r = extractCharRange(ctx.userInput);
+    if (r) return r;
   }
   const presetText = [ctx.writingSystemPreset, ctx.writingUserPreset, ctx.presetContext]
     .filter(v => typeof v === "string" && v.length > 0)
     .join("\n");
   if (presetText) {
-    const n = extractCharLimit(presetText);
-    if (n) candidates.push(n);
+    const r = extractCharRange(presetText);
+    if (r) return r;
   }
-  const def = Number(ctx.maxReplyChars);
-  if (def > 0) candidates.push(def);
-  return candidates.length > 0 ? candidates[0] : 0;
+  const min = Number(ctx.minReplyChars);
+  const max = Number(ctx.maxReplyChars);
+  if (min > 0 || max > 0) return { min: min > 0 ? min : 0, max: max > 0 ? max : 0 };
+  return null;
 }
 
-function appendCharLimitConstraint(systemContent, ctx) {
-  const limit = resolveCharLimit(ctx);
-  if (limit > 0) {
-    systemContent += `\n- 回复正文字数限制：本次回复正文（状态追踪块不计入）必须严格控制在 ${limit} 字以内，不得超过`;
-  }
+function appendCharRangeConstraint(systemContent, ctx) {
+  const r = resolveCharRange(ctx);
+  if (!r) return systemContent;
+  let text;
+  if (r.min > 0 && r.max > 0) text = `\u63a7\u5236\u5728 ${r.min}~${r.max} \u5b57\u4e4b\u95f4`;
+  else if (r.min > 0) text = `\u4e0d\u5c11\u4e8e ${r.min} \u5b57`;
+  else text = `\u4e0d\u8d85\u8fc7 ${r.max} \u5b57`;
+  systemContent += `\n- \u56de\u590d\u6b63\u6587\u5b57\u6570\u9650\u5236\uff1a\u672c\u6b21\u56de\u590d\u6b63\u6587\uff08\u72b6\u6001\u8ffd\u8e2a\u5757\u4e0d\u8ba1\u5165\uff09\u5fc5\u987b\u4e25\u683c${text}\uff0c\u4e0d\u5f97\u8d85\u51fa\u8be5\u8303\u56f4`;
   return systemContent;
 }
 
@@ -52,7 +55,7 @@ export async function runWritingAgent(ctx) {
     systemContent += "\n- \u5de5\u5177\u6267\u884c\u7ed3\u679c\u5df2\u7531\u7cfb\u7edf\u786e\u5b9a\uff0c\u5fc5\u987b\u4e25\u683c\u6309\u7167\u7ed3\u679c\u4e2d\u7684\u8d70\u5411\u6765\u5199\u4f5c\uff0c\u4e0d\u5f97\u81ea\u884c\u6539\u53d8\u5de5\u5177\u6267\u884c\u7ed3\u679c";
   }
 
-  systemContent = appendCharLimitConstraint(systemContent, ctx);
+  systemContent = appendCharRangeConstraint(systemContent, ctx);
 
   const formatTurn = (t) => {
     if (!t.user) {
@@ -129,7 +132,7 @@ export async function runMergedWritingAgent(ctx) {
   if (systemContent) systemContent += "\n\n";
   systemContent += MERGED_WRITING_SYSTEM_SUFFIX;
 
-  systemContent = appendCharLimitConstraint(systemContent, ctx);
+  systemContent = appendCharRangeConstraint(systemContent, ctx);
 
   const formatTurn = (t) => {
     if (!t.user) {

@@ -187,7 +187,19 @@ async function registerSettingsPane() {
       console.log("[NarrativeAgent] 原文召回切换为:", config.pipeline.enableTextRecall);
     });
 
-    $html.find("#na_max_reply_chars").val(config.agents?.writing?.maxReplyChars ?? 0);
+    $html.find("#na_min_reply_chars").val(config.agents?.writing?.minReplyChars ?? 1200);
+    $html.find("#na_min_reply_chars").on("change", function () {
+      const v = Math.max(0, Math.min(9999, parseInt($(this).val(), 10) || 0));
+      if (!config.agents) config.agents = {};
+      if (!config.agents.writing) config.agents.writing = {};
+      config.agents.writing.minReplyChars = v;
+      if (orchestrator) orchestrator.config = config;
+      saveConfig(config);
+      persistState(orchestrator, config, currentChatId);
+      console.log("[NarrativeAgent] 默认最小正文字数调整为:", v);
+    });
+
+    $html.find("#na_max_reply_chars").val(config.agents?.writing?.maxReplyChars ?? 1500);
     $html.find("#na_max_reply_chars").on("change", function () {
       const v = Math.max(0, Math.min(9999, parseInt($(this).val(), 10) || 0));
       if (!config.agents) config.agents = {};
@@ -196,7 +208,7 @@ async function registerSettingsPane() {
       if (orchestrator) orchestrator.config = config;
       saveConfig(config);
       persistState(orchestrator, config, currentChatId);
-      console.log("[NarrativeAgent] 默认正文字数上限调整为:", v);
+      console.log("[NarrativeAgent] 默认最大正文字数调整为:", v);
     });
 
     $html.find("#na_import_data").on("click", function () {

@@ -7,7 +7,23 @@ export function loadConfig() {
     const ctx = getSTContext();
     if (!ctx) return { ...DEFAULT_CONFIG };
     const saved = ctx.extensionSettings?.[EXTENSION_ID]?.config;
-    if (saved && typeof saved === "object") return deepMerge({ ...DEFAULT_CONFIG }, saved);
+    if (saved && typeof saved === "object") {
+      // v0.3.27 → v0.3.28 迁移：旧版单值 maxReplyChars（0=不限）→ 新版区间 min/maxReplyChars
+      // 必须在 deepMerge 之前检查原始配置（合并后默认值会掩盖旧版特征）
+      let configSource = saved;
+      const savedWriting = saved?.agents?.writing;
+      if (savedWriting && savedWriting.minReplyChars === undefined
+          && Object.prototype.hasOwnProperty.call(savedWriting, "maxReplyChars")) {
+        const patch = savedWriting.maxReplyChars > 0
+          ? { minReplyChars: 0, maxReplyChars: savedWriting.maxReplyChars } // 旧版正数上限 → 保留为上限
+          : { minReplyChars: DEFAULT_CONFIG.agents.writing.minReplyChars, maxReplyChars: DEFAULT_CONFIG.agents.writing.maxReplyChars }; // 旧版未配置 → 新默认区间
+        configSource = {
+          ...saved,
+          agents: { ...(saved.agents || {}), writing: { ...savedWriting, ...patch } },
+        };
+      }
+      return deepMerge({ ...DEFAULT_CONFIG }, configSource);
+    }
   } catch { /* ignore */ }
   return { ...DEFAULT_CONFIG };
 }

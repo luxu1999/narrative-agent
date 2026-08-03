@@ -479,6 +479,7 @@ export class Orchestrator {
       beforeCharEntries,
       textRecallEntries
     );
+    writingCtx.minReplyChars = this.config?.agents?.writing?.minReplyChars || 0;
     writingCtx.maxReplyChars = this.config?.agents?.writing?.maxReplyChars || 0;
     const narrativeText = await runWritingAgent(writingCtx);
     this._cancelCheck();
@@ -855,6 +856,7 @@ export class Orchestrator {
         writingUserPreset: "",
         userInput,
         toolResultsText: "",
+        minReplyChars: this.config?.agents?.writing?.minReplyChars || 0,
         maxReplyChars: this.config?.agents?.writing?.maxReplyChars || 0,
       };
       const narrativeText = await runWritingAgent(writingCtx);
@@ -948,6 +950,7 @@ export class Orchestrator {
       writingUserPreset: (typeof this.presetContext === "object")
         ? (this.presetContext.writingUserContext || "")
         : "",
+      minReplyChars: this.config?.agents?.writing?.minReplyChars || 0,
       maxReplyChars: this.config?.agents?.writing?.maxReplyChars || 0,
     });
 

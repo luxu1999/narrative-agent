@@ -15,7 +15,7 @@ export const DEFAULT_CONFIG = {
   },
   agents: {
     planning:       {},
-    writing:        { maxReplyChars: 0 }, // 0 = 不限制；正数 = 写作 Agent 回复正文（不含状态追踪）默认字数上限
+    writing:        { minReplyChars: 1200, maxReplyChars: 1500 }, // 默认正文字数区间（不含状态追踪）；0 = 不限
     mergedAnalysis: { antiHallucination: true },
   },
   state: { autoSyncWorldInfo: true, persistToLocalStorage: true },
