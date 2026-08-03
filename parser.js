@@ -507,6 +507,30 @@ export function reconcileAttitudes(attitudes, affections) {
   return out;
 }
 
+// 从好感度推算默认态度（用于历史状态块缺失「当前态度」字段时的初始化/迁移）
+// 取好感度档位内的常态级（每档第一级）：-100~-81→L1杀意、-80~-61→L3厌恶、-60~-41→L5对抗、
+// -40~-21→L7冷淡、-20~-1→L9警惕、0~20→L11中立、21~40→L13友好、41~60→L15信任、61~80→L17依赖、81~100→L19依恋
+export function inferAttitudesFromAffections(affections) {
+  const out = {};
+  const tierBase = [
+    { min: -100, max: -81, level: 1,  name: "杀意" },
+    { min: -80,  max: -61, level: 3,  name: "厌恶" },
+    { min: -60,  max: -41, level: 5,  name: "对抗" },
+    { min: -40,  max: -21, level: 7,  name: "冷淡" },
+    { min: -20,  max: -1,  level: 9,  name: "警惕" },
+    { min: 0,    max: 20,  level: 11, name: "中立" },
+    { min: 21,   max: 40,  level: 13, name: "友好" },
+    { min: 41,   max: 60,  level: 15, name: "信任" },
+    { min: 61,   max: 80,  level: 17, name: "依赖" },
+    { min: 81,   max: 100, level: 19, name: "依恋" },
+  ];
+  for (const [name, aff] of Object.entries(affections || {})) {
+    const tier = tierBase.find(t => aff >= t.min && aff <= t.max);
+    if (tier) out[name] = { level: tier.level, name: tier.name, mod: "", modText: "", real: "", inferred: true };
+  }
+  return out;
+}
+
 // 把合并后的态度写回状态追踪条目（替换原「当前态度」行；无该行时插到「身体外貌」之前）
 export function replaceAttitudesInTracking(entryText, attitudes) {
   if (!entryText || typeof entryText !== "string") return entryText;

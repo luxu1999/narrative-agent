@@ -7,7 +7,7 @@ import { runMergedAnalysisAgent } from "./agent-analysis.js";
 import { getMvuStateSummary } from "./mvu.js";
 import { rollDice } from "./dice.js";
 import { parseTextToVariables, isApiFailure, withTimeout } from "./utils.js";
-import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking, extractAttitudesFromTracking, extractAffectionsFromTracking, mergeAttitudes, reconcileAttitudes, replaceAttitudesInTracking } from "./parser.js";
+import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking, extractAttitudesFromTracking, extractAffectionsFromTracking, mergeAttitudes, reconcileAttitudes, replaceAttitudesInTracking, inferAttitudesFromAffections } from "./parser.js";
 import { DEFAULT_CONFIG, CANONICAL_CONTEXT_ORDER } from "./constants.js";
 
 export class ToolExecutor {
@@ -1342,11 +1342,17 @@ export class Orchestrator {
       if (Object.keys(sexCounts).length > 0) {
         cleaned = replaceSexCountsInTracking(cleaned, sexCounts);
       }
-      // 当前态度保障：惯性延续（上轮补回 + 本轮覆盖）→ 与好感度档位一致性校验
+      // 当前态度保障：惯性延续（上轮补回 + 本轮覆盖）→ 缺失时按好感度推算初始化 → 档位一致性校验
       const newAttitudes = extractAttitudesFromTracking(entry);
-      const attitudes = mergeAttitudes(prevUsed ? {} : prevAttitudes, newAttitudes);
+      let attitudes = mergeAttitudes(prevUsed ? {} : prevAttitudes, newAttitudes);
+      const affections = extractAffectionsFromTracking(entry);
+      if (Object.keys(attitudes).length === 0 && Object.keys(affections).length > 0) {
+        // 历史状态块无「当前态度」字段且 AI 本轮也未输出 → 按好感度档位推算默认态度（迁移初始化）
+        // 解决：旧 9 字段状态块按最小变化原则照抄上轮，导致该行永远缺失的死循环
+        attitudes = inferAttitudesFromAffections(affections);
+        console.log("[NarrativeAgent] 当前态度字段缺失，按好感度档位推算初始化:", Object.keys(attitudes).join(", "));
+      }
       if (Object.keys(attitudes).length > 0) {
-        const affections = extractAffectionsFromTracking(entry);
         const reconciled = reconcileAttitudes(attitudes, affections);
         cleaned = replaceAttitudesInTracking(cleaned, reconciled);
       }
