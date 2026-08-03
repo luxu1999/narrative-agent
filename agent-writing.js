@@ -11,11 +11,12 @@ export function resolveCharRange(ctx) {
 }
 
 // 根据字数上限换算生成 token 上限（responseLength），确保模型有足够的生成空间写满字数：
-// 中文 1 字 ≈ 1~2 token，按 2.5 倍预留余量；上限 8000，下限 500
+// 中文 1 字 ≈ 1~2 token，按 4 倍预留余量（含模型 thinking 占用、标点/分段开销），上限 8000，下限 500
+// 注：v0.3.29 用 2.5 倍导致带思考的模型正文被截断（用户反馈「然后继续」半截句），改为 4 倍
 export function resolveResponseLength(ctx) {
   const max = Number(ctx.maxReplyChars);
   if (max <= 0) return null;
-  return Math.min(8000, Math.max(500, Math.ceil(max * 2.5)));
+  return Math.min(8000, Math.max(500, Math.ceil(max * 4)));
 }
 
 export function appendCharRangeConstraint(systemContent, ctx) {
