@@ -47,14 +47,18 @@ export class SillyTavernBridge {
   }
 
   // 从最新AI消息正文提取状态追踪段（F主）：查找 [第N轮]状态追踪： 到 结尾/下一个[第N轮] 之间
-  _extractLatestStateTrackingFromChat(chat) {
+  // v0.3.30 增强：回溯最近 N 条 AI 消息（默认10条），找最后一条含状态块的——
+  // 避免中间某轮 summary 为空导致注入断链（死循环），能从更早的历史消息续上状态
+  _extractLatestStateTrackingFromChat(chat, maxScan = 10) {
     if (!chat || !Array.isArray(chat) || chat.length === 0) return null;
-    // 从后往前找最后一条 AI 消息
-    for (let i = chat.length - 1; i >= 0; i--) {
+    let scanned = 0;
+    // 从后往前扫最近 N 条 AI 消息
+    for (let i = chat.length - 1; i >= 0 && scanned < maxScan; i--) {
       const msg = chat[i];
       if (!msg || msg.is_user) continue;
       const text = (msg.mes || msg.content || "").trim();
       if (!text) continue;
+      scanned++;
       // 状态追踪段：从 [第N轮]状态追踪： 开始（捕获原始轮次数字，禁止硬编码 [第N轮]）
       // 消息中可能有多条状态追踪（历史残留），取最后一条（最新）
       const re = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/g;
@@ -86,8 +90,7 @@ export class SillyTavernBridge {
           return "[第" + roundNum + "轮]状态追踪：\n" + stateText;
         }
       }
-      // 只查最后一条 AI 消息，找不到就返回 null（交给 E 兜底）
-      break;
+      // 继续往前扫（不再 break），直到扫满 maxScan 条或找到
     }
     return null;
   }

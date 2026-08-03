@@ -42,14 +42,28 @@ export async function runMergedAnalysisAgent(ctx) {
   if (ctx.changedPatches && ctx.changedPatches.trim()) {
     userContent += `<world_state_changes>\n${ctx.changedPatches}\n</world_state_changes>\n\n`;
   }
-  userContent += "请输出分析结果。";
+  // 硬性要求：状态追踪条目是必选项，禁止省略（提示词层强制）
+  userContent += "请输出分析结果。\n【硬性要求】summary_entries 必须包含 1 条 [第N轮]状态追踪 条目（即使状态无变化也要完整复制上一状态输出），禁止省略、禁止输出空数组。";
 
   const messages = [
     { role: "system", content: systemContent },
     { role: "user", content: userContent },
   ];
 
-  return parseMergedOutput(await callLLM(messages, { label: "merged-analysis" }));
+  // 合并分析输出状态块较长，显式传 responseLength 防被 ST Response Length 截断（同写作 Agent）
+  let parsed = parseMergedOutput(await callLLM(messages, { label: "merged-analysis", responseLength: 4000 }));
+
+  // 兜底重试：输出为空（JSON 解析失败/模型省略状态条目）时，追加强制指令重试一次
+  if (parsed.summary_entries.length === 0) {
+    console.warn("[NarrativeAgent] merged-analysis 未输出状态追踪条目，重试一次（强制输出）");
+    const retryMessages = [
+      { role: "system", content: systemContent },
+      { role: "user", content: userContent + "\n\n【重试警告】上一次输出中没有 [第N轮]状态追踪 条目，本次必须输出：\n1. 只输出 JSON\n2. summary_entries 必须包含 1 条完整 [第N轮]状态追踪 条目（无变化就严格复制 <state_tracking> 中的上一状态，首次则初始化完整状态）\n3. 禁止省略、禁止空数组" },
+    ];
+    parsed = parseMergedOutput(await callLLM(retryMessages, { label: "merged-analysis-retry", responseLength: 4000 }));
+  }
+
+  return parsed;
 }
 
 export async function runMergedAnalysisAntiHallucination(ctx) {
