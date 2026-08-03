@@ -427,8 +427,9 @@ export function affectionTier(aff) {
   return null;
 }
 
-// 从状态追踪条目文本中提取「当前态度」字段 → { 角色名: { level, name, mod, modText, real } }
-// 支持格式：琴：L14服软（暂时，受胁迫）/ 芭芭拉：L16顺从 / 优菈：服软（无级别号按名称查表）
+// 从状态追踪条目文本中提取「当前态度」字段 → { 角色名: { level, name, mod, modText, real, inner } }
+// 支持格式：琴：L14服软（受胁迫）/ 芭芭拉：L16顺从 / 琴：L18讨好（内心L2敌视，贪婪图谋）
+// inner = 括号内解析出的内心真实态度 { level, name, raw }（若有「内心Lxx」标注）；modText = 原始括号文本
 // 用全局正则直接匹配条目（角色名排除分隔符），避免括号内逗号被 split 误切
 export function extractAttitudesFromTracking(entryText) {
   const attitudes = {};
@@ -446,12 +447,26 @@ export function extractAttitudesFromTracking(entryText) {
     const modText = pm[4] ? pm[4].trim() : "";
     const mod = /暂时/.test(modText) ? "temporary" : (/伪装|假装|欺骗|假意/.test(modText) ? "fake" : "");
     const real = modText.includes("内心") ? modText : "";
+    // 解析「内心Lxx名称」标注（真实内心态度）
+    let inner = null;
+    const im = modText.match(/内心\s*(?:(?:L|l)\s*(\d{1,2}))?\s*([^，,；;）)]+)/);
+    if (im) {
+      let innerLevel = im[1] ? parseInt(im[1], 10) : null;
+      const innerName = (im[2] || "").trim();
+      if (innerLevel === null) {
+        const byName = ATTITUDE_LEVELS.find(l => l.name === innerName);
+        if (byName) innerLevel = byName.level;
+      }
+      if (innerLevel && innerLevel >= 1 && innerLevel <= 20 && innerName) {
+        inner = { level: innerLevel, name: innerName, raw: im[0].trim() };
+      }
+    }
     if (pm[2]) {
       const level = parseInt(pm[2], 10);
-      if (level >= 1 && level <= 20) attitudes[name] = { level, name: attName, mod, modText, real };
+      if (level >= 1 && level <= 20) attitudes[name] = { level, name: attName, mod, modText, real, inner };
     } else {
       const byName = ATTITUDE_LEVELS.find(l => l.name === attName);
-      if (byName) attitudes[name] = { level: byName.level, name: attName, mod, modText, real };
+      if (byName) attitudes[name] = { level: byName.level, name: attName, mod, modText, real, inner };
     }
   }
   return attitudes;
@@ -480,29 +495,41 @@ export function mergeAttitudes(oldAttitudes, newAttitudes) {
   return merged;
 }
 
-// 态度-好感度一致性校验：无修饰符（真诚）的态度级别必须落在好感度档位的 2 级区间内
-// 不匹配 → 校正到档位内离当前级别最近的级别（带 corrected 标记）；无好感度可查时不做干预
-// 带修饰符（暂时/伪装）的态度允许脱离档位（情境性/欺骗性态度），不校正
-// 好感度缺失/无效时返回校正后的结果（该角色按无好感度处理，不干预）
+// 态度-好感度一致性校验（双层模型）：
+// - 表面态度 = 角色表现出的言行，由剧情与动机驱动（受胁迫/贪婪图谋/虚伪利用/策略讨好等），
+//   允许与好感度（真实内心情感）不一致——表里不一是合理剧情，**表面态度永不强制校正**
+// - 内心真实态度（括号内「内心Lxx」标注）= 真实情感，应与好感度档位一致：
+//   标注了内心且与好感度档位不符时，校正内心到档位内最近的级别（同步更新括号标注文本）
+// - 无好感度可查时不干预；无内心标注时表面态度自由（严重不符且无动机标注仅 console.warn 供调试）
 export function reconcileAttitudes(attitudes, affections) {
   const out = {};
   for (const [name, at] of Object.entries(attitudes || {})) {
     if (!at || !at.level) { out[name] = at; continue; }
-    if (at.mod === "temporary" || at.mod === "fake") { out[name] = at; continue; }
     const aff = (affections && typeof affections[name] === "number") ? affections[name] : null;
-    if (aff === null) { out[name] = at; continue; }
-    const tier = affectionTier(aff);
-    if (!tier) { out[name] = at; continue; }
-    const valid = ATTITUDE_LEVELS.filter(l => l.minA === tier.min && l.maxA === tier.max);
-    if (valid.some(l => l.level === at.level)) { out[name] = at; continue; }
-    // 校正：取档位内离当前级别最近的级别
-    let best = null;
-    for (const l of valid) {
-      const d = Math.abs(l.level - at.level);
-      if (!best || d < best.d) best = { l, d };
+    const tier = (aff !== null) ? affectionTier(aff) : null;
+    const valid = tier ? ATTITUDE_LEVELS.filter(l => l.minA === tier.min && l.maxA === tier.max) : null;
+    const corrected = { ...at };
+    // 内心真实态度校验（仅当标注了「内心Lxx」且好感度已知）
+    if (corrected.inner && valid && !valid.some(l => l.level === corrected.inner.level)) {
+      let best = null;
+      for (const l of valid) {
+        const d = Math.abs(l.level - corrected.inner.level);
+        if (!best || d < best.d) best = { l, d };
+      }
+      if (best) {
+        corrected.inner = { ...corrected.inner, level: best.l.level, name: best.l.name, corrected: true };
+        // 同步更新括号标注文本中的「内心...」部分（保留动机等其他内容）
+        if (corrected.modText) {
+          corrected.modText = corrected.modText.replace(/内心[^，,；;）)]*/,
+            `内心L${best.l.level}${best.l.name}`);
+        }
+      }
     }
-    if (best) out[name] = { ...at, level: best.l.level, name: best.l.name, corrected: true };
-    else out[name] = at;
+    // 表面态度与好感度严重不符且无任何标注 → 仅告警供调试，不干预输出（允许表里不一剧情）
+    if (valid && !valid.some(l => l.level === at.level) && !at.modText && !corrected.inner) {
+      console.warn(`[NA:attitude] 表面态度 L${at.level}${at.name} 与好感度 ${aff} 档位不符且无动机/内心标注（允许；如需表里不一请注明内心或动机）: ${name}`);
+    }
+    out[name] = corrected;
   }
   return out;
 }
@@ -526,7 +553,7 @@ export function inferAttitudesFromAffections(affections) {
   ];
   for (const [name, aff] of Object.entries(affections || {})) {
     const tier = tierBase.find(t => aff >= t.min && aff <= t.max);
-    if (tier) out[name] = { level: tier.level, name: tier.name, mod: "", modText: "", real: "", inferred: true };
+    if (tier) out[name] = { level: tier.level, name: tier.name, mod: "", modText: "", real: "", inner: null, inferred: true };
   }
   return out;
 }
