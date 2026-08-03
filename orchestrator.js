@@ -7,7 +7,7 @@ import { runMergedAnalysisAgent } from "./agent-analysis.js";
 import { getMvuStateSummary } from "./mvu.js";
 import { rollDice } from "./dice.js";
 import { parseTextToVariables, isApiFailure, withTimeout } from "./utils.js";
-import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking } from "./parser.js";
+import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking, extractAttitudesFromTracking, extractAffectionsFromTracking, mergeAttitudes, reconcileAttitudes, replaceAttitudesInTracking } from "./parser.js";
 import { DEFAULT_CONFIG, CANONICAL_CONTEXT_ORDER } from "./constants.js";
 
 export class ToolExecutor {
@@ -1314,12 +1314,14 @@ export class Orchestrator {
   // 长期记忆保障：合并上一轮与新一轮状态追踪条目的重要记忆点
   // 每角色最多 6 条；即使本轮完全没有新记忆，上一轮记忆也完整保留（不依赖 AI 自觉复制）
   // 同时合并做爱次数：终身累计、只增不减（AI 误清零时以历史最大值为准补回）
+  // 同时保障当前态度：①惯性延续（AI 漏输出时用上轮态度补回，不无故横跳）②与好感度档位一致性校验
   _mergeStateTrackingMemories(newEntries) {
     if (!Array.isArray(newEntries) || newEntries.length === 0) return newEntries;
     const out = [];
     const prevTracking = this.summaryStore.getLatestStateTracking();
     const prevMemories = prevTracking ? extractMemoriesFromTracking(prevTracking) : {};
     const prevSexCounts = prevTracking ? extractSexCountsFromTracking(prevTracking) : {};
+    const prevAttitudes = prevTracking ? extractAttitudesFromTracking(prevTracking) : {};
     let prevUsed = false;
     for (const entry of newEntries) {
       if (typeof entry !== "string" || !entry.includes("\u72b6\u6001\u8ffd\u8e2a\uff1a")) {
@@ -1339,6 +1341,14 @@ export class Orchestrator {
       const sexCounts = mergeSexCounts(prevUsed ? {} : prevSexCounts, extractSexCountsFromTracking(entry));
       if (Object.keys(sexCounts).length > 0) {
         cleaned = replaceSexCountsInTracking(cleaned, sexCounts);
+      }
+      // 当前态度保障：惯性延续（上轮补回 + 本轮覆盖）→ 与好感度档位一致性校验
+      const newAttitudes = extractAttitudesFromTracking(entry);
+      const attitudes = mergeAttitudes(prevUsed ? {} : prevAttitudes, newAttitudes);
+      if (Object.keys(attitudes).length > 0) {
+        const affections = extractAffectionsFromTracking(entry);
+        const reconciled = reconcileAttitudes(attitudes, affections);
+        cleaned = replaceAttitudesInTracking(cleaned, reconciled);
       }
       out.push(cleaned);
       prevUsed = true;

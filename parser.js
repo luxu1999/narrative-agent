@@ -382,3 +382,155 @@ export function replaceSexCountsInTracking(entryText, counts) {
     : "做爱次数：" + counts[names[0]] + "次";
   return entryText.replace(/做爱次数[：:][^\n]*/, line);
 }
+
+// ==================== 当前态度（20级）保障 ====================
+// 目的：①态度跨轮惯性（上轮服软本轮延续，不无故横跳）②态度与好感度档位一致性
+// （无修饰符时态度级别必须落在好感度对应档位内，禁止好感度-90却态度温和的矛盾）
+
+// 20级态度表：级别/名称/绑定好感度档位区间
+// 每好感度档 2 级：常态级 + 波动级
+const ATTITUDE_LEVELS = [
+  { level: 1,  name: "杀意", minA: -100, maxA: -81 },
+  { level: 2,  name: "敌视", minA: -100, maxA: -81 },
+  { level: 3,  name: "厌恶", minA: -80,  maxA: -61 },
+  { level: 4,  name: "冷拒", minA: -80,  maxA: -61 },
+  { level: 5,  name: "对抗", minA: -60,  maxA: -41 },
+  { level: 6,  name: "疏远", minA: -60,  maxA: -41 },
+  { level: 7,  name: "冷淡", minA: -40,  maxA: -21 },
+  { level: 8,  name: "不满", minA: -40,  maxA: -21 },
+  { level: 9,  name: "警惕", minA: -20,  maxA: -1 },
+  { level: 10, name: "戒备", minA: -20,  maxA: -1 },
+  { level: 11, name: "中立", minA: 0,    maxA: 20 },
+  { level: 12, name: "缓和", minA: 0,    maxA: 20 },
+  { level: 13, name: "友好", minA: 21,   maxA: 40 },
+  { level: 14, name: "服软", minA: 21,   maxA: 40 },
+  { level: 15, name: "信任", minA: 41,   maxA: 60 },
+  { level: 16, name: "顺从", minA: 41,   maxA: 60 },
+  { level: 17, name: "依赖", minA: 61,   maxA: 80 },
+  { level: 18, name: "讨好", minA: 61,   maxA: 80 },
+  { level: 19, name: "依恋", minA: 81,   maxA: 100 },
+  { level: 20, name: "痴缠", minA: 81,   maxA: 100 },
+];
+
+// 好感度 10 档区间（与状态追踪提示词一致）
+export function affectionTier(aff) {
+  if (aff >= -100 && aff <= -81) return { min: -100, max: -81 };
+  if (aff >= -80 && aff <= -61) return { min: -80, max: -61 };
+  if (aff >= -60 && aff <= -41) return { min: -60, max: -41 };
+  if (aff >= -40 && aff <= -21) return { min: -40, max: -21 };
+  if (aff >= -20 && aff <= -1) return { min: -20, max: -1 };
+  if (aff >= 0 && aff <= 20) return { min: 0, max: 20 };
+  if (aff >= 21 && aff <= 40) return { min: 21, max: 40 };
+  if (aff >= 41 && aff <= 60) return { min: 41, max: 60 };
+  if (aff >= 61 && aff <= 80) return { min: 61, max: 80 };
+  if (aff >= 81 && aff <= 100) return { min: 81, max: 100 };
+  return null;
+}
+
+// 从状态追踪条目文本中提取「当前态度」字段 → { 角色名: { level, name, mod, modText, real } }
+// 支持格式：琴：L14服软（暂时，受胁迫）/ 芭芭拉：L16顺从 / 优菈：服软（无级别号按名称查表）
+// 用全局正则直接匹配条目（角色名排除分隔符），避免括号内逗号被 split 误切
+export function extractAttitudesFromTracking(entryText) {
+  const attitudes = {};
+  if (!entryText || typeof entryText !== "string") return attitudes;
+  const m = entryText.match(/当前态度[：:][^\n]*/);
+  if (!m) return attitudes;
+  const raw = m[0].replace(/^当前态度[：:]/, "").trim();
+  if (!raw || raw === "无" || raw === "无变化") return attitudes;
+  const re = /([^：:、，,|；;\n]{1,12})[：:]\s*(?:(?:L|l)(\d{1,2}))?\s*([^（(、，,|；;：:\n]+)(?:（([^）)]*)）)?/g;
+  let pm;
+  while ((pm = re.exec(raw)) !== null) {
+    const name = pm[1].trim();
+    const attName = (pm[3] || "").trim();
+    if (!name || !attName) continue;
+    const modText = pm[4] ? pm[4].trim() : "";
+    const mod = /暂时/.test(modText) ? "temporary" : (/伪装|假装|欺骗|假意/.test(modText) ? "fake" : "");
+    const real = modText.includes("内心") ? modText : "";
+    if (pm[2]) {
+      const level = parseInt(pm[2], 10);
+      if (level >= 1 && level <= 20) attitudes[name] = { level, name: attName, mod, modText, real };
+    } else {
+      const byName = ATTITUDE_LEVELS.find(l => l.name === attName);
+      if (byName) attitudes[name] = { level: byName.level, name: attName, mod, modText, real };
+    }
+  }
+  return attitudes;
+}
+
+// 从状态追踪条目文本中提取「角色好感度」字段 → { 角色名: 数值 }
+export function extractAffectionsFromTracking(entryText) {
+  const aff = {};
+  if (!entryText || typeof entryText !== "string") return aff;
+  const m = entryText.match(/(?:当前好感度|角色好感度)[：:][^\n]*/);
+  if (!m) return aff;
+  const raw = m[0].replace(/(?:当前好感度|角色好感度)[：:]/, "").trim();
+  const parts = raw.split(/[、，,|；;]/).map(s => s.trim()).filter(Boolean);
+  for (const part of parts) {
+    const pm = part.match(/^([^：:]{1,12})[：:]\s*(-?\d+)/);
+    if (pm) aff[pm[1].trim()] = parseInt(pm[2], 10);
+  }
+  return aff;
+}
+
+// 合并两轮态度：上轮全部保留 + 本轮覆盖（惯性优先，缺失角色自动补上轮值）
+export function mergeAttitudes(oldAttitudes, newAttitudes) {
+  const merged = {};
+  for (const [n, v] of Object.entries(oldAttitudes || {})) merged[n] = v;
+  for (const [n, v] of Object.entries(newAttitudes || {})) merged[n] = v;
+  return merged;
+}
+
+// 态度-好感度一致性校验：无修饰符（真诚）的态度级别必须落在好感度档位的 2 级区间内
+// 不匹配 → 校正到档位内离当前级别最近的级别（带 corrected 标记）；无好感度可查时不做干预
+// 带修饰符（暂时/伪装）的态度允许脱离档位（情境性/欺骗性态度），不校正
+// 好感度缺失/无效时返回校正后的结果（该角色按无好感度处理，不干预）
+export function reconcileAttitudes(attitudes, affections) {
+  const out = {};
+  for (const [name, at] of Object.entries(attitudes || {})) {
+    if (!at || !at.level) { out[name] = at; continue; }
+    if (at.mod === "temporary" || at.mod === "fake") { out[name] = at; continue; }
+    const aff = (affections && typeof affections[name] === "number") ? affections[name] : null;
+    if (aff === null) { out[name] = at; continue; }
+    const tier = affectionTier(aff);
+    if (!tier) { out[name] = at; continue; }
+    const valid = ATTITUDE_LEVELS.filter(l => l.minA === tier.min && l.maxA === tier.max);
+    if (valid.some(l => l.level === at.level)) { out[name] = at; continue; }
+    // 校正：取档位内离当前级别最近的级别
+    let best = null;
+    for (const l of valid) {
+      const d = Math.abs(l.level - at.level);
+      if (!best || d < best.d) best = { l, d };
+    }
+    if (best) out[name] = { ...at, level: best.l.level, name: best.l.name, corrected: true };
+    else out[name] = at;
+  }
+  return out;
+}
+
+// 把合并后的态度写回状态追踪条目（替换原「当前态度」行；无该行时插到「身体外貌」之前）
+export function replaceAttitudesInTracking(entryText, attitudes) {
+  if (!entryText || typeof entryText !== "string") return entryText;
+  if (!attitudes || Object.keys(attitudes).length === 0) return entryText;
+  const names = Object.keys(attitudes);
+  const line = "当前态度：" + names.map(n => {
+    const at = attitudes[n];
+    const modText = at.modText ? "（" + at.modText + "）" : "";
+    return n + "：L" + at.level + (at.name || "") + modText;
+  }).join("、");
+  if (/当前态度[：:]/.test(entryText)) {
+    return entryText.replace(/当前态度[：:][^\n]*/, line);
+  }
+  // 无该行 → 插到「身体外貌」行之前（即「角色好感度」之后）
+  const lines = entryText.split("\n");
+  const out = [];
+  let inserted = false;
+  for (const l of lines) {
+    if (!inserted && /^身体外貌/.test(l)) {
+      out.push(line);
+      inserted = true;
+    }
+    out.push(l);
+  }
+  if (!inserted) out.push(line);
+  return out.join("\n");
+}
