@@ -51,7 +51,9 @@ export async function runMergedAnalysisAgent(ctx) {
   ];
 
   // 合并分析输出状态块较长，显式传 responseLength 防被 ST Response Length 截断（同写作 Agent）
-  let parsed = parseMergedOutput(await callLLM(messages, { label: "merged-analysis", responseLength: 4000 }));
+  // 4000 在模型带思考（reasoning 计入 token 额度）时可能不够——第二条起要参考完整状态演化，输出+思考更长，
+  // 截断会导致 JSON 解析失败 → summary 空（用户反馈「第一条有第二条没有」）；提到 8000 并放宽超时到 240s
+  let parsed = parseMergedOutput(await callLLM(messages, { label: "merged-analysis", responseLength: 8000, timeoutMs: 240000 }));
 
   // 兜底重试：输出为空（JSON 解析失败/模型省略状态条目）时，追加强制指令重试一次
   if (parsed.summary_entries.length === 0) {
@@ -60,7 +62,7 @@ export async function runMergedAnalysisAgent(ctx) {
       { role: "system", content: systemContent },
       { role: "user", content: userContent + "\n\n【重试警告】上一次输出中没有 [第N轮]状态追踪 条目，本次必须输出：\n1. 只输出 JSON\n2. summary_entries 必须包含 1 条完整 [第N轮]状态追踪 条目（无变化就严格复制 <state_tracking> 中的上一状态，首次则初始化完整状态）\n3. 禁止省略、禁止空数组" },
     ];
-    parsed = parseMergedOutput(await callLLM(retryMessages, { label: "merged-analysis-retry", responseLength: 4000 }));
+    parsed = parseMergedOutput(await callLLM(retryMessages, { label: "merged-analysis-retry", responseLength: 8000, timeoutMs: 240000 }));
   }
 
   return parsed;
