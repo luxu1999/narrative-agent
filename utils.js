@@ -29,58 +29,6 @@ export function deepMerge(target, source) {
   return result;
 }
 
-// 从文本中提取明确的字数要求，返回 { min, max } 或 null：
-// 优先级（命中高层级即返回）：
-//   1. 区间形式：「1200~1500字」「800-1000字」「500至800字」「300到500字」 → { min, max }
-//   2. 前导语义词：「不超过/最多500字」 → { min: 0, max: n }（上限）；「至少500字」 → { min: n, max: 0 }（下限）
-//   3. 后缀修饰：「300字以内/以下/内」 → { min: 0, max: n }；「300字左右/上下」或裸「300字」 → { min: n, max: n }（约 n 字）
-// 同一层级取最后一个匹配（用户最后说的算）
-// 用于：本轮用户输入 / 预设提示词中的字数要求 → 覆盖面板默认值
-export function extractCharRange(text) {
-  if (!text || typeof text !== "string") return null;
-
-  // 1) 区间形式
-  const rangeMatches = [];
-  const reRange = /(\d{1,4})\s*(?:~|～|-|至|到)\s*(\d{1,4})\s*[字个]/g;
-  let m;
-  while ((m = reRange.exec(text)) !== null) {
-    let a = parseInt(m[1], 10);
-    let b = parseInt(m[2], 10);
-    if (a > b) { const t = a; a = b; b = t; }
-    if (a >= 1 && b <= 9999) rangeMatches.push({ min: a, max: b });
-  }
-  if (rangeMatches.length > 0) return rangeMatches[rangeMatches.length - 1];
-
-  // 2) 前导语义词：不超过/最多 → 上限；至少 → 下限
-  const leadMatches = [];
-  const reLead = /(不超过|最多)(?:[^。；;\n]{0,10}?)(\d{1,4})\s*[字个]|至少(?:[^。；;\n]{0,10}?)(\d{1,4})\s*[字个]/g;
-  while ((m = reLead.exec(text)) !== null) {
-    if (m[1]) {
-      const n = parseInt(m[2], 10);
-      if (n >= 1 && n <= 9999) leadMatches.push({ min: 0, max: n });
-    } else if (m[3]) {
-      const n = parseInt(m[3], 10);
-      if (n >= 1 && n <= 9999) leadMatches.push({ min: n, max: 0 });
-    }
-  }
-  if (leadMatches.length > 0) return leadMatches[leadMatches.length - 1];
-
-  // 3) 后缀修饰 / 裸数字
-  const singleMatches = [];
-  const reSingle = /(?:字数|回复|回答|输出|正文)?[^。；;\n]{0,10}?(\d{1,4})\s*[字个](以内|以下|左右|上下|内)?/g;
-  while ((m = reSingle.exec(text)) !== null) {
-    const n = parseInt(m[1], 10);
-    if (n < 1 || n > 9999) continue;
-    const mod = m[2];
-    if (mod === "以内" || mod === "以下" || mod === "内") {
-      singleMatches.push({ min: 0, max: n });
-    } else {
-      singleMatches.push({ min: n, max: n }); // 左右/上下/裸数字 → 目标值
-    }
-  }
-  return singleMatches.length > 0 ? singleMatches[singleMatches.length - 1] : null;
-}
-
 export function getSTContext() {
   try { return window.SillyTavern?.getContext() ?? null; } catch { return null; }
 }

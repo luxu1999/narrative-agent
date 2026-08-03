@@ -17,6 +17,11 @@ export async function callLLM(messages, options) {
   const label = (options && options.label) || `call_${llmCallCount}`;
   const maxRetries = (options && options.retries) || 1;
   const timeoutMs = (options && options.timeoutMs) || DEFAULT_LLM_TIMEOUT_MS;
+  // 可选的生成 token 上限：>0 时透传 generateRaw 的 responseLength，临时覆盖 ST 的 Response Length 设置
+  // （不传则沿用 ST 当前配置；若 ST 的 Response Length 设得过小，正文会被截断写不满字数）
+  const responseLength = (options && typeof options.responseLength === "number" && options.responseLength > 0)
+    ? options.responseLength
+    : null;
 
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -30,7 +35,7 @@ export async function callLLM(messages, options) {
       console.log(`[LLMClient] ${label} \u8c03\u7528, messages \u6570\u91cf: ${messages.length}, \u63d0\u793a\u8bcd\u5b57\u7b26\u6570: ${promptSize}${promptSize > 120000 ? " ⚠️ \u5f88\u5927\uff0c\u53ef\u80fd\u89e6\u53d1\u4e0a\u4e0b\u6587\u4e0a\u9650" : ""}`);
       // generateRaw 在 ST 本版本不接受 signal，无法真正中止请求；
       // 用「超时 + 取消轮询」包装：超时抛错（不重试），停止按钮轮询立即中断等待
-      const result = await withTimeoutWithCancel(() => ctx.generateRaw({ prompt: messages }), timeoutMs, () => globalCancelCheck && globalCancelCheck());
+      const result = await withTimeoutWithCancel(() => ctx.generateRaw({ prompt: messages, responseLength }), timeoutMs, () => globalCancelCheck && globalCancelCheck());
       const text = extractText(result);
       if (!text || (typeof text === "string" && text.trim().length === 0)) {
         throw new Error("[LLMClient] generateRaw \u8fd4\u56de\u7a7a\u5185\u5bb9\uff0c\u8bf7\u6c42\u53ef\u80fd\u88ab\u53d6\u6d88\u6216API\u9519\u8bef");

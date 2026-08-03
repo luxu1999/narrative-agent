@@ -1,35 +1,31 @@
 import { callLLM } from "./llm.js";
 import { WRITING_SYSTEM_SUFFIX, MERGED_WRITING_SYSTEM_SUFFIX } from "./constants.js";
-import { extractCharRange } from "./utils.js";
 
-// 解析本轮有效正文字数区间，优先级：本轮用户输入 > 预设（system+user）> 面板默认值
+// 正文字数区间：固定使用面板配置（不做输入/预设的优先级解析）
 // 返回 { min, max } 或 null（null = 不限制）
 export function resolveCharRange(ctx) {
-  if (ctx.userInput) {
-    const r = extractCharRange(ctx.userInput);
-    if (r) return r;
-  }
-  const presetText = [ctx.writingSystemPreset, ctx.writingUserPreset, ctx.presetContext]
-    .filter(v => typeof v === "string" && v.length > 0)
-    .join("\n");
-  if (presetText) {
-    const r = extractCharRange(presetText);
-    if (r) return r;
-  }
   const min = Number(ctx.minReplyChars);
   const max = Number(ctx.maxReplyChars);
   if (min > 0 || max > 0) return { min: min > 0 ? min : 0, max: max > 0 ? max : 0 };
   return null;
 }
 
-function appendCharRangeConstraint(systemContent, ctx) {
+// 根据字数上限换算生成 token 上限（responseLength），确保模型有足够的生成空间写满字数：
+// 中文 1 字 ≈ 1~2 token，按 2.5 倍预留余量；上限 8000，下限 500
+export function resolveResponseLength(ctx) {
+  const max = Number(ctx.maxReplyChars);
+  if (max <= 0) return null;
+  return Math.min(8000, Math.max(500, Math.ceil(max * 2.5)));
+}
+
+export function appendCharRangeConstraint(systemContent, ctx) {
   const r = resolveCharRange(ctx);
   if (!r) return systemContent;
   let text;
-  if (r.min > 0 && r.max > 0) text = `\u63a7\u5236\u5728 ${r.min}~${r.max} \u5b57\u4e4b\u95f4`;
+  if (r.min > 0 && r.max > 0) text = `\u56fa\u5b9a\u5728 ${r.min}~${r.max} \u5b57\u4e4b\u95f4\uff0c\u4e0d\u5f97\u5c11\u4e8e${r.min}\u5b57\u3001\u4e0d\u5f97\u591a\u4e8e${r.max}\u5b57`;
   else if (r.min > 0) text = `\u4e0d\u5c11\u4e8e ${r.min} \u5b57`;
   else text = `\u4e0d\u8d85\u8fc7 ${r.max} \u5b57`;
-  systemContent += `\n- \u56de\u590d\u6b63\u6587\u5b57\u6570\u9650\u5236\uff1a\u672c\u6b21\u56de\u590d\u6b63\u6587\uff08\u72b6\u6001\u8ffd\u8e2a\u5757\u4e0d\u8ba1\u5165\uff09\u5fc5\u987b\u4e25\u683c${text}\uff0c\u4e0d\u5f97\u8d85\u51fa\u8be5\u8303\u56f4`;
+  systemContent += `\n- \u56de\u590d\u6b63\u6587\u5b57\u6570\u89c4\u8303\uff1a\u672c\u6b21\u56de\u590d\u6b63\u6587\uff08\u72b6\u6001\u8ffd\u8e2a\u5757\u4e0d\u8ba1\u5165\uff09\u5fc5\u987b${text}\u3002\u5982\u679c\u5185\u5bb9\u4e0d\u8db3\u4ee5\u8fbe\u5230\u8981\u6c42\uff0c\u8bf7\u901a\u8fc7\u8865\u5145\u73af\u5883\u3001\u795e\u6001\u3001\u52a8\u4f5c\u3001\u5fc3\u7406\u7b49\u7ec6\u8282\u63cf\u5199\u6765\u8fbe\u5230\u5b57\u6570\u8981\u6c42`;
   return systemContent;
 }
 
@@ -113,7 +109,7 @@ export async function runWritingAgent(ctx) {
     { role: "user", content: userContent },
   ];
 
-  const raw = await callLLM(messages, { label: "writing" });
+  const raw = await callLLM(messages, { label: "writing", responseLength: resolveResponseLength(ctx) });
   return raw.trim();
 }
 
@@ -182,6 +178,6 @@ export async function runMergedWritingAgent(ctx) {
     { role: "user", content: userContent },
   ];
 
-  const raw = await callLLM(messages, { label: "merged-writing" });
+  const raw = await callLLM(messages, { label: "merged-writing", responseLength: resolveResponseLength(ctx) });
   return raw.trim();
 }
