@@ -29,6 +29,23 @@ export function deepMerge(target, source) {
   return result;
 }
 
+// 从文本中提取明确的字数要求（如「300字以内」「字数不超过500字」「回复200字左右」）
+// 返回最后一个匹配到的合理字数（1~9999），没有则返回 null
+// 用于：本轮用户输入 / 预设提示词中的字数要求 → 覆盖面板默认值
+export function extractCharLimit(text) {
+  if (!text || typeof text !== "string") return null;
+  const re = /(?:字数|回复|回答|输出|正文|不超过)[^。；;\n]{0,15}?(\d{1,4})\s*[字个]|(\d{1,4})\s*[字个](?:以内|以下|左右|上下|内|吧|就行|即可|就好)|(\d{1,4})\s*[字个]/g;
+  let last = null;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const raw = m[1] || m[2] || m[3];
+    if (!raw) continue;
+    const n = parseInt(raw, 10);
+    if (n >= 1 && n <= 9999) last = n;
+  }
+  return last;
+}
+
 export function getSTContext() {
   try { return window.SillyTavern?.getContext() ?? null; } catch { return null; }
 }
