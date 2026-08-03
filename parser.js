@@ -389,8 +389,9 @@ export function replaceSexCountsInTracking(entryText, counts) {
 
 // 20级态度表：级别/名称/绑定好感度档位区间
 // 每好感度档 2 级：常态级 + 波动级
+// 名称是态度基调，不是行为模板：具体言行由角色性格决定（胆小者 L1 可表现为恐惧逃避，强势者 L1 才表现为攻击威胁）
 const ATTITUDE_LEVELS = [
-  { level: 1,  name: "杀意", minA: -100, maxA: -81 },
+  { level: 1,  name: "仇视", minA: -100, maxA: -81 },
   { level: 2,  name: "敌视", minA: -100, maxA: -81 },
   { level: 3,  name: "厌恶", minA: -80,  maxA: -61 },
   { level: 4,  name: "冷拒", minA: -80,  maxA: -61 },
@@ -411,6 +412,10 @@ const ATTITUDE_LEVELS = [
   { level: 19, name: "依恋", minA: 81,   maxA: 100 },
   { level: 20, name: "痴缠", minA: 81,   maxA: 100 },
 ];
+
+// 括号内容黑名单：身体状态/无关内容（如「熟睡中」「受伤」「醉酒」）
+// 括号内只允许「内心Lxx」真实态度标注或动机/原因短语；命中黑名单且无内心标注 → 清空括号（表里一致则无括号）
+const ATTITUDE_BODY_STATE_RE = /熟睡|睡着|睡觉|入睡|沉睡|昏迷|昏睡|晕倒|晕厥|受伤|流血|喝醉|醉酒|醉倒|发呆|发愣|失神|瘫软|麻痹|石化|冰冻/;
 
 // 好感度 10 档区间（与状态追踪提示词一致）
 export function affectionTier(aff) {
@@ -463,7 +468,11 @@ export function extractAttitudesFromTracking(entryText) {
     }
     if (pm[2]) {
       const level = parseInt(pm[2], 10);
-      if (level >= 1 && level <= 20) attitudes[name] = { level, name: attName, mod, modText, real, inner };
+      if (level >= 1 && level <= 20) {
+        // 名称规范化：以表内名称为准（旧名/别名自动纠正，如 L1杀意 → L1仇视），防止旧名称残留污染
+        const tableEntry = ATTITUDE_LEVELS.find(l => l.level === level);
+        attitudes[name] = { level, name: tableEntry ? tableEntry.name : attName, mod, modText, real, inner };
+      }
     } else {
       const byName = ATTITUDE_LEVELS.find(l => l.name === attName);
       if (byName) attitudes[name] = { level: byName.level, name: attName, mod, modText, real, inner };
@@ -509,6 +518,12 @@ export function reconcileAttitudes(attitudes, affections) {
     const tier = (aff !== null) ? affectionTier(aff) : null;
     const valid = tier ? ATTITUDE_LEVELS.filter(l => l.minA === tier.min && l.maxA === tier.max) : null;
     const corrected = { ...at };
+    // 括号内容过滤：命中身体状态黑名单（熟睡/受伤/醉酒等）且无内心标注 → 清空括号（表里一致则无括号）
+    if (corrected.modText && !corrected.inner && ATTITUDE_BODY_STATE_RE.test(corrected.modText)) {
+      corrected.modText = "";
+      corrected.mod = "";
+      corrected.real = "";
+    }
     // 内心真实态度校验（仅当标注了「内心Lxx」且好感度已知）
     if (corrected.inner && valid && !valid.some(l => l.level === corrected.inner.level)) {
       let best = null;
@@ -540,7 +555,7 @@ export function reconcileAttitudes(attitudes, affections) {
 export function inferAttitudesFromAffections(affections) {
   const out = {};
   const tierBase = [
-    { min: -100, max: -81, level: 1,  name: "杀意" },
+    { min: -100, max: -81, level: 1,  name: "仇视" },
     { min: -80,  max: -61, level: 3,  name: "厌恶" },
     { min: -60,  max: -41, level: 5,  name: "对抗" },
     { min: -40,  max: -21, level: 7,  name: "冷淡" },
