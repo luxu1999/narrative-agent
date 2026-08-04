@@ -15,7 +15,7 @@ export const DEFAULT_CONFIG = {
   },
   agents: {
     planning:       {},
-    writing:        { minReplyChars: 1200, maxReplyChars: 1500, dialogueDriven: true }, // 默认正文字数区间（不含状态追踪）；0 = 不限；dialogueDriven=剧情通过角色间多轮对话推进（默认开启）
+    writing:        { minReplyChars: 800, maxReplyChars: 1200, dialogueDriven: true }, // 默认正文字数区间（不含状态追踪）；0 = 不限；dialogueDriven=剧情通过角色间多轮对话推进（默认开启）
     mergedAnalysis: { antiHallucination: true },
   },
   state: { autoSyncWorldInfo: true, persistToLocalStorage: true },
@@ -80,11 +80,11 @@ export const WRITING_SYSTEM_SUFFIX = `你是叙事写作引擎。根据写作指
 
 // 对话驱动剧情推进规则（写作 Agent 用，配置开关 agents.writing.dialogueDriven，默认开启）：
 // 剧情主要通过角色间的多轮对话推进，叙述只作辅助
-// 注意：与用户角色互动时由 AI 扮演出场角色发言，不替用户角色说话
+// 用户角色发言：AI 可代写用户角色的台词来维持对话场节奏，但不过度（详见规则）
 const DIALOGUE_DRIVEN_WRITING_RULE = `【剧情推进方式：对话驱动】
 - 剧情主要通过角色之间的多轮对话来推进，而非叙述旁白：本轮回复以对话为主体，用对话展开情节、揭示信息、激化或缓和冲突
 - 多个角色在场时，角色之间要互相交谈、回应、插话、争辩，形成对话场（NPC 之间的对话往来由你撰写），而不是各自单向陈述
-- 与用户扮演的角色互动时，你以当前出场角色的身份直接对话：台词要接住用户的言行并抛出回应空间，严禁替用户扮演的角色说话或替其做决定
+- 与用户扮演的角色互动时，你以当前出场角色的身份直接对话；为了让对话场流畅推进，**可以代写用户扮演的角色的台词**（如简短的附和、反问、过渡句），但必须克制：①用户输入框里已经明确说出的内容，不得篡改或替其重说；②代写台词只用于推动对话节奏（承接、追问、过渡），不得替用户角色做重大决定、不得替其表达用户没透露过的关键立场、不得抢走用户对角色的掌控；③用户主动发言后以用户输入为准
 - 所有台词必须标注说话人（如：琴："……"）；叙述描写（动作/环境/神态）只作辅助，用于标注说话人的动作和表情，禁止用大段纯叙述替代对话
 - 对话内容与语气必须符合角色性格及**<current_state>**中的当前态度，态度转变通过对话内容自然体现`;
 

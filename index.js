@@ -187,7 +187,7 @@ async function registerSettingsPane() {
       console.log("[NarrativeAgent] 原文召回切换为:", config.pipeline.enableTextRecall);
     });
 
-    $html.find("#na_min_reply_chars").val(config.agents?.writing?.minReplyChars ?? 1200);
+    $html.find("#na_min_reply_chars").val(config.agents?.writing?.minReplyChars ?? 800);
     $html.find("#na_min_reply_chars").on("change", function () {
       const v = Math.max(0, Math.min(9999, parseInt($(this).val(), 10) || 0));
       if (!config.agents) config.agents = {};
@@ -199,7 +199,7 @@ async function registerSettingsPane() {
       console.log("[NarrativeAgent] 默认最小正文字数调整为:", v);
     });
 
-    $html.find("#na_max_reply_chars").val(config.agents?.writing?.maxReplyChars ?? 1500);
+    $html.find("#na_max_reply_chars").val(config.agents?.writing?.maxReplyChars ?? 1200);
     $html.find("#na_max_reply_chars").on("change", function () {
       const v = Math.max(0, Math.min(9999, parseInt($(this).val(), 10) || 0));
       if (!config.agents) config.agents = {};
