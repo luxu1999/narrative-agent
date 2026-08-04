@@ -211,6 +211,17 @@ async function registerSettingsPane() {
       console.log("[NarrativeAgent] 默认最大正文字数调整为:", v);
     });
 
+    $html.find("#na_dialogue_driven").prop("checked", config.agents?.writing?.dialogueDriven !== false);
+    $html.find("#na_dialogue_driven").on("change", function () {
+      if (!config.agents) config.agents = {};
+      if (!config.agents.writing) config.agents.writing = {};
+      config.agents.writing.dialogueDriven = $(this).prop("checked");
+      if (orchestrator) orchestrator.config = config;
+      saveConfig(config);
+      persistState(orchestrator, config, currentChatId);
+      console.log("[NarrativeAgent] 对话驱动剧情推进切换为:", config.agents.writing.dialogueDriven);
+    });
+
     $html.find("#na_import_data").on("click", function () {
       const input = document.createElement("input");
       input.type = "file";

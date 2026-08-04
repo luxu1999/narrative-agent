@@ -257,14 +257,18 @@ export class Orchestrator {
     if (this._injectedStateTracking) {
       const injected = this._injectedStateTracking;
       this._injectedStateTracking = null; // 一次性消费
+      // 注入内容带旧轮次前缀（如 [第9轮]），先统一归一化为本轮编号（按 turnId 推导，regenerate 也正确）：
+      // ①拼入 user_input 的 <current_state> 用归一化版（旧逻辑只归一化写回 summaryStore 的副本，
+      //   user_input 里仍是旧轮次 → merged-analysis 复述旧编号 → 状态块编号停滞不前进）
+      // ②写回 summaryStore 最新条目也用归一化版（覆盖 checkpoint 恢复的旧值，避免基准错乱）
+      const roundFromTurnId = parseInt(String(turnId).replace(/^turn_/, ""), 10);
+      const targetRound = (!isNaN(roundFromTurnId) && roundFromTurnId > 0) ? roundFromTurnId : this.turnCounter + 1;
+      const injectedNormalized = injected.replace(/^\s*\[第\s*\d+\s*轮\]/, "[第" + targetRound + "轮]");
       // 格式：用户消息 + 明确分隔的当前状态追踪（AI 需参照，但视为当前事实而非用户指令）
-      userInput = userInput + "\n\n<current_state>\n" + injected + "\n</current_state>\n\n【当前世界状态，必须完全参照，禁止矛盾；仅供理解，严禁在正文复述输出（系统会自动追加状态块）】";
+      userInput = userInput + "\n\n<current_state>\n" + injectedNormalized + "\n</current_state>\n\n【当前世界状态，必须完全参照，禁止矛盾；仅供理解，严禁在正文复述输出（系统会自动追加状态块）】";
       // 关键：将注入的状态同步写回 summaryStore 最新条目（覆盖 checkpoint 恢复的旧值）
             try {
         const store = this.summaryStore;
-        // 注入内容带旧轮次前缀（如 [第9轮]），写回时统一改为当前轮次，避免 summaryStore 基准错乱
-        const currentTurn = this.turnCounter + 1;
-        const injectedNormalized = injected.replace(/^\s*\[\u7b2c\s*\d+\s*\u8f6e\]/, "[第" + currentTurn + "轮]");
         if (store && store._entries && store._entries.length > 0) {
           // 先清理 [第N轮] 占位符残留条目（历史 bug 产生的脏数据，防止 merged-analysis 读到）
           store._entries = store._entries.filter(e => !(typeof e === "string" && e.includes("[第N轮]")));
@@ -402,6 +406,7 @@ export class Orchestrator {
       userInput, recentTurns, systemEntries, beforeCharEntries, allWorldInfo3,
       stateSummary, this.presetContext, planningTools
     );
+    planningCtx.dialogueDriven = this.config?.agents?.writing?.dialogueDriven !== false;
     const writingGuide = await runPlanningAgent(planningCtx);
     this._cancelCheck();
 
@@ -481,6 +486,7 @@ export class Orchestrator {
     );
     writingCtx.minReplyChars = this.config?.agents?.writing?.minReplyChars || 0;
     writingCtx.maxReplyChars = this.config?.agents?.writing?.maxReplyChars || 0;
+    writingCtx.dialogueDriven = this.config?.agents?.writing?.dialogueDriven !== false;
     const narrativeText = await runWritingAgent(writingCtx);
     this._cancelCheck();
 
@@ -858,6 +864,7 @@ export class Orchestrator {
         toolResultsText: "",
         minReplyChars: this.config?.agents?.writing?.minReplyChars || 0,
         maxReplyChars: this.config?.agents?.writing?.maxReplyChars || 0,
+        dialogueDriven: this.config?.agents?.writing?.dialogueDriven !== false,
       };
       const narrativeText = await runWritingAgent(writingCtx);
 
@@ -952,6 +959,7 @@ export class Orchestrator {
         : "",
       minReplyChars: this.config?.agents?.writing?.minReplyChars || 0,
       maxReplyChars: this.config?.agents?.writing?.maxReplyChars || 0,
+      dialogueDriven: this.config?.agents?.writing?.dialogueDriven !== false,
     });
 
     this._cancelCheck();

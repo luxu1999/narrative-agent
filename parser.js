@@ -48,21 +48,32 @@ export function parseMergedOutput(rawText) {
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenceMatch) text = fenceMatch[1].trim();
 
+  // ① 完整 JSON 优先
   try {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.warn("[NA] parseMergedOutput: \u672a\u627e\u5230JSON");
-      return result;
-    }
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (Array.isArray(parsed.events)) {
-      result.events = parsed.events.filter(ev => ev && typeof ev === "object" && typeof ev.type === "string");
-    }
-    if (Array.isArray(parsed.summary_entries)) {
-      result.summary_entries = parsed.summary_entries.filter(s => typeof s === "string" && s.trim().length > 0);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed.events)) {
+        result.events = parsed.events.filter(ev => ev && typeof ev === "object" && typeof ev.type === "string");
+      }
+      if (Array.isArray(parsed.summary_entries)) {
+        result.summary_entries = parsed.summary_entries.filter(s => typeof s === "string" && s.trim().length > 0);
+      }
     }
   } catch (e) {
     console.warn("[NA] parseMergedOutput: JSON\u89e3\u6790\u5931\u8d25", e.message);
+  }
+
+  // ② 截断容忍兜底：完整 JSON 缺失/解析失败时，不依赖闭合结构，直接扫描
+  //    summary_entries / events 数组里的完整字符串字面量（容忍末尾截断，丢弃未闭合的最后一个字符串）
+  if (result.summary_entries.length === 0) {
+    result.summary_entries = extractStringLiteralsFromArray(text, "summary_entries")
+      .filter(s => s.trim().length > 0)
+      .map(s => unescapeJsonString(s));
+  }
+  if (result.events.length === 0) {
+    result.events = extractObjectsFromArray(text, "events")
+      .filter(ev => ev && typeof ev.type === "string");
   }
 
   // 兜底：AI 可能把「叙事要点」误附在状态追踪条目（重要记忆点）之后，
@@ -73,6 +84,78 @@ export function parseMergedOutput(rawText) {
   // ② 丢弃重复的旧轮次状态追踪（指引文案诱导 AI 复述的旧状态，如 [第9轮] + [第10轮] 并存时只留 [第10轮]）
   result.summary_entries = dedupeStateTracking(result.summary_entries);
   return result;
+}
+
+// ==================== 截断 JSON 容错提取 ====================
+// 背景：带思考的模型输出 merged-analysis JSON 时，思考+正文可能超过 responseLength 被截断；
+// 截断且无闭合 `}` 时，\{…\} 正则匹配不到 → 旧逻辑直接返回空 → 状态追踪整轮丢失（隔轮消失 bug 根因之一）。
+// 修复：不依赖完整 JSON，直接扫描目标数组的字符串/对象字面量（逐字符、字符串感知、容忍截断）。
+
+// JSON 字符串转义还原（\n → 换行、\" → 引号等）；失败时原样返回
+function unescapeJsonString(s) {
+  try { return JSON.parse('"' + s + '"'); } catch { return s; }
+}
+
+// 从文本中提取 JSON 数组（key 对应数组）内所有【完整闭合】的字符串字面量（不含引号，已反转义）
+// 扫描器是字符串感知的（跳过字符串内的 [ ] 与引号，处理 \ 转义）；末尾未闭合的字符串直接丢弃
+function extractStringLiteralsFromArray(text, key) {
+  const out = [];
+  const keyIdx = text.indexOf('"' + key + '"');
+  if (keyIdx < 0) return out;
+  const arrStart = text.indexOf("[", keyIdx);
+  if (arrStart < 0) return out;
+  let i = arrStart;
+  let inString = false;
+  let cur = null;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") { cur += ch + (text[i + 1] || ""); i += 2; continue; }
+      if (ch === '"') { inString = false; if (cur !== null) out.push(cur); cur = null; i++; continue; }
+      cur += ch; i++; continue;
+    }
+    if (ch === '"') { inString = true; cur = ""; i++; continue; }
+    if (ch === "]" && !inString) break;
+    i++;
+  }
+  return out;
+}
+
+// 从文本中提取 JSON 数组内所有【完整闭合】的对象字面量（括号平衡 + 字符串感知）
+// 每个对象独立 JSON.parse；截断在对象中间时停止（保留已完整解析的对象）
+function extractObjectsFromArray(text, key) {
+  const out = [];
+  const keyIdx = text.indexOf('"' + key + '"');
+  if (keyIdx < 0) return out;
+  const arrStart = text.indexOf("[", keyIdx);
+  if (arrStart < 0) return out;
+  let i = arrStart + 1;
+  while (i < text.length) {
+    while (i < text.length && /[\s,]/.test(text[i])) i++;
+    if (i >= text.length) break;
+    if (text[i] !== "{") { i++; continue; }
+    let depth = 0;
+    let inStr = false;
+    const start = i;
+    let done = false;
+    for (; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (ch === "\\") { i++; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) { i++; done = true; break; } }
+    }
+    if (!done) break; // 截断在对象中间 → 停止
+    try {
+      const obj = JSON.parse(text.slice(start, i));
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) out.push(obj);
+    } catch { /* 单对象损坏则跳过 */ }
+  }
+  return out;
 }
 
 // 状态追踪去重：只保留最后一条标准格式（[第N轮]状态追踪： 前缀）的状态追踪

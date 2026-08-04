@@ -49,9 +49,13 @@ export class SillyTavernBridge {
   // 从最新AI消息正文提取状态追踪段（F主）：查找 [第N轮]状态追踪： 到 结尾/下一个[第N轮] 之间
   // v0.3.30 增强：回溯最近 N 条 AI 消息（默认10条），找最后一条含状态块的——
   // 避免中间某轮 summary 为空导致注入断链（死循环），能从更早的历史消息续上状态
+  // v0.3.31 增强：①跨消息取【轮次编号最大】的状态块（而非“最新消息里的最后一块”——
+  //   失败轮次可能复述旧轮次状态，按消息新旧取会拿到停滞的旧状态；按轮次取保证注入最先进的状态）
+  //   ②状态块捕获在 `</summary>` 前结束（旧逻辑 `$` 匹配到消息末尾，把 `</summary>` 尾巴吞进状态文本）
   _extractLatestStateTrackingFromChat(chat, maxScan = 10) {
     if (!chat || !Array.isArray(chat) || chat.length === 0) return null;
     let scanned = 0;
+    let best = null; // { round, text }
     // 从后往前扫最近 N 条 AI 消息
     for (let i = chat.length - 1; i >= 0 && scanned < maxScan; i--) {
       const msg = chat[i];
@@ -59,40 +63,33 @@ export class SillyTavernBridge {
       const text = (msg.mes || msg.content || "").trim();
       if (!text) continue;
       scanned++;
-      // 状态追踪段：从 [第N轮]状态追踪： 开始（捕获原始轮次数字，禁止硬编码 [第N轮]）
-      // 消息中可能有多条状态追踪（历史残留），取最后一条（最新）
-      const re = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/g;
-      let mm;
-      let last = null;
-      while ((mm = re.exec(text)) !== null) {
-        if (mm[2] && mm[2].trim()) last = mm;
-      }
-      if (last) {
-        const stateText = last[2].trim();
-        const roundNum = last[1] || "";
-        console.log("[NarrativeAgent] F主：从最新AI消息提取状态追踪 (第" + roundNum + "轮, " + stateText.length + " chars)");
-        return "[第" + roundNum + "轮]状态追踪：\n" + stateText;
-      }
-      // 兼容 <summary> 块内提取（同样保留原始轮次）
-      const sumRe = /<summary>([\s\S]*?)<\/summary>/i;
-      const sm = text.match(sumRe);
-      if (sm && sm[1]) {
-        const stRe = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|$)/g;
-        let stm2;
-        let stLast = null;
-        while ((stm2 = stRe.exec(sm[1])) !== null) {
-          if (stm2[2] && stm2[2].trim()) stLast = stm2;
-        }
-        if (stLast) {
-          const stateText = stLast[2].trim();
-          const roundNum = stLast[1] || "";
-          console.log("[NarrativeAgent] F主：从<summary>提取状态追踪 (第" + roundNum + "轮, " + stateText.length + " chars)");
-          return "[第" + roundNum + "轮]状态追踪：\n" + stateText;
+      // 同时扫描：①消息全文 ②<summary> 块内容（正文与摘要都可能含状态块）
+      const sources = [text];
+      const sumRe = /<summary>([\s\S]*?)<\/summary>/gi;
+      let sm;
+      while ((sm = sumRe.exec(text)) !== null) sources.push(sm[1]);
+      let msgBest = null; // 本消息内的最佳块
+      for (const src of sources) {
+        // 状态追踪段：从 [第N轮]状态追踪： 开始，到 下一个[第N轮] / </summary> / 文本结尾 结束
+        const re = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|\n\s*<\/summary>|$)/g;
+        let mm;
+        while ((mm = re.exec(src)) !== null) {
+          if (mm[2] && mm[2].trim()) {
+            const round = parseInt(mm[1], 10) || 0;
+            // 清理残留标签尾巴（保险：万一捕获段仍含 </summary> 等）
+            const clean = mm[2].trim().replace(/<\/?summary>/gi, "").replace(/<[^>]*>\s*$/g, "").trim();
+            if (!clean) continue;
+            // 同消息内：轮次更大者胜；同轮次取后出现者（消息内靠后 = 更新）
+            if (!msgBest || round >= msgBest.round) msgBest = { round, text: clean };
+          }
         }
       }
-      // 继续往前扫（不再 break），直到扫满 maxScan 条或找到
+      // 跨消息：轮次更大者胜；同轮次保留先扫到者（从后往前扫 → 先扫到 = 消息更新）
+      if (msgBest && (!best || msgBest.round > best.round)) best = msgBest;
     }
-    return null;
+    if (!best) return null;
+    console.log("[NarrativeAgent] F主：提取状态追踪 (第" + best.round + "轮, " + best.text.length + " chars)");
+    return "[第" + best.round + "轮]状态追踪：\n" + best.text;
   }
 
   _onMessageDeleted(newChatLength) {

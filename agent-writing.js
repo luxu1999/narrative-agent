@@ -1,5 +1,5 @@
 import { callLLM } from "./llm.js";
-import { WRITING_SYSTEM_SUFFIX, MERGED_WRITING_SYSTEM_SUFFIX } from "./constants.js";
+import { WRITING_SYSTEM_SUFFIX, MERGED_WRITING_SYSTEM_SUFFIX, DIALOGUE_DRIVEN_WRITING_RULE } from "./constants.js";
 
 // 正文字数区间：固定使用面板配置（不做输入/预设的优先级解析）
 // 返回 { min, max } 或 null（null = 不限制）
@@ -31,6 +31,13 @@ export function appendCharRangeConstraint(systemContent, ctx) {
   return systemContent;
 }
 
+// 对话驱动剧情推进规则：配置 agents.writing.dialogueDriven（默认开启）控制
+// 开启后剧情主要通过角色间多轮对话推进（叙述只作辅助）；关闭则保持原叙述风格
+export function appendDialogueRule(systemContent, ctx) {
+  if (ctx.dialogueDriven === false) return systemContent;
+  return systemContent + "\n\n" + DIALOGUE_DRIVEN_WRITING_RULE;
+}
+
 export async function runWritingAgent(ctx) {
   const guide = ctx.writingGuide;
   const hasToolResults = ctx.toolResultsText && ctx.toolResultsText.length > 0;
@@ -54,6 +61,7 @@ export async function runWritingAgent(ctx) {
   }
 
   systemContent = appendCharRangeConstraint(systemContent, ctx);
+  systemContent = appendDialogueRule(systemContent, ctx);
 
   const formatTurn = (t) => {
     if (!t.user) {
@@ -131,6 +139,7 @@ export async function runMergedWritingAgent(ctx) {
   systemContent += MERGED_WRITING_SYSTEM_SUFFIX;
 
   systemContent = appendCharRangeConstraint(systemContent, ctx);
+  systemContent = appendDialogueRule(systemContent, ctx);
 
   const formatTurn = (t) => {
     if (!t.user) {

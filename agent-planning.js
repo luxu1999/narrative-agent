@@ -1,6 +1,6 @@
 import { callLLM } from "./llm.js";
 import { parsePlanningOutput } from "./parser.js";
-import { PLANNING_SYSTEM_SUFFIX } from "./constants.js";
+import { PLANNING_SYSTEM_SUFFIX, DIALOGUE_DRIVEN_PLANNING_RULE } from "./constants.js";
 
 export async function runPlanningAgent(ctx) {
   const formatTurn = (t) => {
@@ -27,6 +27,10 @@ export async function runPlanningAgent(ctx) {
 
   if (ctx.toolListText) {
     systemContent += "\n\n" + ctx.toolListText;
+  }
+
+  if (ctx.dialogueDriven !== false) {
+    systemContent += "\n\n" + DIALOGUE_DRIVEN_PLANNING_RULE;
   }
 
   let userContent = "";
