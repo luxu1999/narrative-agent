@@ -321,35 +321,84 @@ function truncateMemory(text, maxLen) {
   return cut;
 }
 
+// ==================== 记忆时效与相关度（Generative Agents 式 recency + relevance） ====================
+// 说明：原实现只用静态关键词权重 + 「新记忆 +20 固定加成」，没有时效、没有对当前语境的相关度。
+// 本次改造引入：
+//   - 时效衰减 recency：记忆越久没被「本轮 AI 提及」，分数指数衰减（RECENCY_DECAY^age）
+//   - 相关度加成 relevance：记忆所属角色当前在场（在场角色+BUFF），分数加成
+// 二者叠加到原来的关键词重要度之上，改善「重要但陈旧 / 在场但琐碎」的取舍，避免每轮全量堆砌旧记忆。
+const RECENCY_DECAY = 0.75;            // 每老一轮的衰减因子（age=0 → 1.0，age=1 → 0.75，越旧越低）
+const PRESENCE_RELEVANCE_BONUS = 25;   // 记忆所属角色「当前在场」的相关度加成
+
+// 记忆「最近被 AI 提及」的轮次记录（char\0text -> round）。
+// 内存级：随聊天会话存在；会话/页面重载后重置 → 重载后按 epoch 统一起算（轻微，避免首次加载误删旧记忆）。
+// 仅当 memoryMentionRound 刷新时才视为「新鲜」；仅被保留但不再被本轮提及的记忆会继续老化。
+const memoryMentionRound = new Map();
+let memoryAgeEpoch = null;             // 本会话首个 currentRound，作为「无提及记录」记忆的老化起算点
+
+// 单条记忆最终得分 = 关键词重要度 × 时效因子 + 相关度加成
+function computeMemoryScore(text, age, char, presentChars) {
+  let score = scoreMemory(text);                                  // 关键词重要度（0~100+）
+  score *= Math.pow(RECENCY_DECAY, Math.max(0, age));             // 时效因子（age=0 → 1.0）
+  if (presentChars && presentChars.has(char)) score += PRESENCE_RELEVANCE_BONUS;  // 在场相关度加成
+  return score;
+}
+
+// 距上次被提及的轮数；无记录时回落到 epoch（本会话起始轮），保证随轮次推进自然老化而非误删
+function memoryAge(char, text, currentRound) {
+  const last = memoryMentionRound.get(char + "\u0000" + text);
+  if (last == null) return Math.max(0, currentRound - (memoryAgeEpoch ?? currentRound));
+  return Math.max(0, currentRound - last);
+}
+
 // 合并两轮记忆：旧记忆完整保留 + 新记忆追加（去重），每角色最多 6 条
-// 新记忆插入到前面（优先保留最新），超过 6 条时丢弃最旧的
-export function mergeMemories(oldMemories, newMemories) {
-  const merged = {};
+// 取舍依据「重要度 × 时效 + 相关度」而非固定加成；新记忆（本轮被提及）视为最新，旧记忆自然衰减。
+// opts: { currentRound, presentChars } 可选；不传时退回原「+20 新记忆」风格的近似，保证向后兼容。
+export function mergeMemories(oldMemories, newMemories, opts = {}) {
+  const currentRound = (opts && Number.isInteger(opts.currentRound)) ? opts.currentRound : null;
+  const presentChars = (opts && Array.isArray(opts.presentChars)) ? new Set(opts.presentChars) : null;
+  if (currentRound != null && memoryAgeEpoch == null) memoryAgeEpoch = currentRound;
+
   const allChars = new Set([
     ...Object.keys(oldMemories || {}),
     ...Object.keys(newMemories || {}),
   ]);
+  const combined = [];
   for (const ch of allChars) {
     const oldList = Array.isArray(oldMemories?.[ch]) ? oldMemories[ch] : [];
     const newList = Array.isArray(newMemories?.[ch]) ? newMemories[ch] : [];
     const seen = new Set();
-    const combined = [];
-    // 新记忆优先收集（标记得分加成：新发生的事件 AI 认为值得记录，给予保底优势）
+    // 新记忆（本轮 AI 提及）：age=0（最新），相关度加成照常
     for (const m of newList) {
       const t = String(m).trim();
-      if (t && !seen.has(t)) { seen.add(t); combined.push({ text: t, score: scoreMemory(t) + 20 }); }
+      if (t && !seen.has(t)) { seen.add(t); combined.push({ char: ch, text: t, score: computeMemoryScore(t, 0, ch, presentChars) }); }
     }
-    // 旧记忆补充（无加成）
+    // 旧记忆（未被本轮提及）：按距上次提及的轮数老化
     for (const m of oldList) {
       const t = String(m).trim();
-      if (t && !seen.has(t)) { seen.add(t); combined.push({ text: t, score: scoreMemory(t) }); }
+      if (t && !seen.has(t)) { seen.add(t); combined.push({ char: ch, text: t, score: computeMemoryScore(t, currentRound != null ? memoryAge(ch, t, currentRound) : 1, ch, presentChars) }); }
     }
-    // 取舍：按分数降序，每角色最多保留最重要的 6 条
-    combined.sort((a, b) => b.score - a.score);
-    merged[ch] = combined.slice(0, 6).map(item => {
-      // 字数限制：每条记忆 ≤20 字（分隔符感知截断，防止切出残句）
-      return truncateMemory(item.text, 20);
-    });
+  }
+  // 全局按最终得分降序，逐角色累积到上限 6 条（同分时先到先得，语义稳定）
+  combined.sort((a, b) => b.score - a.score);
+  const perChar = {};
+  for (const item of combined) {
+    if (!perChar[item.char]) perChar[item.char] = [];
+    if (perChar[item.char].length < 6) perChar[item.char].push(item.text);
+  }
+  // 仅当记忆在本轮被 AI 提及（newMemories）时刷新其「新鲜」轮次；仅被保留的旧记忆不刷新 → 继续老化
+  if (currentRound != null) {
+    for (const ch of Object.keys(newMemories || {})) {
+      for (const m of (newMemories[ch] || [])) {
+        const t = String(m).trim();
+        if (t) memoryMentionRound.set(ch + "\u0000" + t, currentRound);
+      }
+    }
+  }
+  // 每角色 ≤6 条、每条 ≤20 字（分隔符感知截断）
+  const merged = {};
+  for (const ch of Object.keys(perChar)) {
+    merged[ch] = perChar[ch].map(it => truncateMemory(it, 20));
   }
   return merged;
 }
@@ -577,6 +626,24 @@ export function extractAffectionsFromTracking(entryText) {
     if (pm) aff[pm[1].trim()] = parseInt(pm[2], 10);
   }
   return aff;
+}
+
+// 从状态追踪条目文本中提取「在场角色+BUFF」字段的在场角色名列表
+// 支持格式：琴（回溯魔法）|芭芭拉（中毒）或 琴|芭芭拉；无在场角色时返回空数组
+export function extractPresentCharactersFromTracking(entryText) {
+  if (!entryText || typeof entryText !== "string") return [];
+  const m = entryText.match(/在场角色[^\n]*/);
+  if (!m) return [];
+  const raw = m[0].replace(/^在场角色[^：:]*[：:]/, "").trim();
+  if (!raw || raw === "无" || raw === "所有角色都在场") return [];
+  const names = raw.split(/[|｜、\n]/).map((s) => {
+    const p = s.trim();
+    if (!p) return "";
+    // 去掉括号及括号内的 BUFF（如：琴（回溯魔法）→ 琴）
+    const nm = p.match(/^[^（）()]+/);
+    return (nm ? nm[0] : p).trim();
+  }).filter((s) => s && s !== "无" && s !== "所有角色都在场");
+  return names;
 }
 
 // 合并两轮态度：上轮全部保留 + 本轮覆盖（惯性优先，缺失角色自动补上轮值）

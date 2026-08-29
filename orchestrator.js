@@ -7,7 +7,7 @@ import { runMergedAnalysisAgent } from "./agent-analysis.js";
 import { getMvuStateSummary } from "./mvu.js";
 import { rollDice } from "./dice.js";
 import { parseTextToVariables, isApiFailure, withTimeout } from "./utils.js";
-import { mergeMemories, extractMemoriesFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking, extractAttitudesFromTracking, extractAffectionsFromTracking, mergeAttitudes, reconcileAttitudes, replaceAttitudesInTracking, inferAttitudesFromAffections } from "./parser.js";
+import { mergeMemories, extractMemoriesFromTracking, extractPresentCharactersFromTracking, replaceMemoriesInTracking, extractSexCountsFromTracking, mergeSexCounts, replaceSexCountsInTracking, extractAttitudesFromTracking, extractAffectionsFromTracking, mergeAttitudes, reconcileAttitudes, replaceAttitudesInTracking, inferAttitudesFromAffections } from "./parser.js";
 import { DEFAULT_CONFIG, CANONICAL_CONTEXT_ORDER } from "./constants.js";
 
 export class ToolExecutor {
@@ -1338,8 +1338,13 @@ export class Orchestrator {
       }
       // 本轮 AI 输出的记忆点
       const newMemories = extractMemoriesFromTracking(entry);
-      // 合并：旧记忆完整保留 + 新记忆优先，每角色 ≤6 条
-      const merged = mergeMemories(prevUsed ? {} : prevMemories, newMemories);
+      // 记忆合并：引入「时效衰减 + 在场相关度」——当前轮次取自条目轮次前缀（regenerate 也正确），
+      // 在场角色取自本轮状态块的「在场角色+BUFF」字段（用于给在场角色的记忆相关度加成）
+      const roundMatch = entry.match(/\[第\s*(\d+)\s*轮\]/);
+      const currentRound = roundMatch ? parseInt(roundMatch[1], 10) : (this.turnCounter || 1);
+      const presentChars = extractPresentCharactersFromTracking(entry);
+      // 合并：旧记忆完整保留 + 新记忆最新；每角色 ≤6 条；按「重要度×时效+在场加成」取舍
+      const merged = mergeMemories(prevUsed ? {} : prevMemories, newMemories, { currentRound, presentChars });
       // 若 AI 完全没有输出记忆点，用上一轮记忆整体补回
       const finalMemories = (Object.keys(merged).length === 0) && !prevUsed
         ? prevMemories
