@@ -9,7 +9,7 @@
 
 import { getSTContext, getLatestUserInput } from "./utils.js";
 import { buildMessages } from "./prompt.js";
-import { parseModelOutput } from "./parse.js";
+import { parseModelOutput, formatStateBlock } from "./parse.js";
 import { EMPTY_OUTPUT_NOTICE } from "./constants.js";
 
 const GEN_NORMAL = "normal";
@@ -127,23 +127,36 @@ export class NarrativeBridge {
 
     const raw = String(msg.mes ?? msg.content ?? "");
     const stripThinking = this.engine.config?.stripThinking !== false;
-    const { body, stateText, hadThinking } = parseModelOutput(raw, plan.turn, stripThinking);
+    const { body, stateText, filled, hadThinking } = parseModelOutput(raw, plan.turn, stripThinking);
 
     if (!body && raw.trim()) {
       console.warn("[NarrativeAgent] 解析后正文为空，原始返回如下（仅日志）:\n" + raw.slice(0, 2000));
     }
 
-    msg.mes = body || EMPTY_OUTPUT_NOTICE;
+    // 状态追踪兜底：模型没给状态块就沿用上一轮，保证每段末尾都能看到完整状态
+    const prevState = this.engine.prevState();
+    let finalState = stateText;
+    if (!finalState && prevState) {
+      finalState = formatStateBlock(prevState, plan.turn, prevState).text;
+      console.warn(`[NarrativeAgent] 第${plan.turn}轮未解析出状态块，沿用上一轮状态`);
+    }
+    if (finalState && filled && filled.length > 0) {
+      console.warn(`[NarrativeAgent] 第${plan.turn}轮状态块缺项，已用上一轮补齐：${filled.join("、")}`);
+    }
+
+    const bodyText = body || EMPTY_OUTPUT_NOTICE;
+    const showState = this.engine.config?.showStateInMessage !== false;
+    msg.mes = finalState && showState ? `${bodyText}\n\n${finalState}` : bodyText;
     try {
       if (typeof ctx.updateMessageBlock === "function") ctx.updateMessageBlock(index, msg);
     } catch (e) {
       console.warn("[NarrativeAgent] 刷新消息显示失败:", e?.message);
     }
 
-    if (stateText) {
-      this.engine.applyState(stateText, plan.turn);
+    if (finalState) {
+      this.engine.applyState(finalState, plan.turn);
     } else {
-      console.warn(`[NarrativeAgent] 第${plan.turn}轮未解析出状态块，状态保持不变`);
+      console.warn(`[NarrativeAgent] 第${plan.turn}轮没有任何状态可记录（首轮且模型未输出状态块）`);
     }
 
     this.engine.afterTurn(plan.turn);
@@ -165,7 +178,8 @@ export class NarrativeBridge {
 
     console.log(
       `[NarrativeAgent] 第${plan.turn}轮完成：正文 ${body.length} 字符` +
-        `${hadThinking ? "（已剥离思考块）" : ""}${stateText ? "，状态已更新" : "，状态未变"}`
+        `${hadThinking ? "（已剥离思考块）" : ""}` +
+        `${finalState ? `，状态追踪${showState ? "已附在消息末尾" : "已存档（未展示）"}` : "，无状态追踪"}`
     );
   }
 }

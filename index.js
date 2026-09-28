@@ -246,6 +246,7 @@ async function registerSettingsPane() {
   bindCheckbox("#na_inject_keyword", () => config.injectKeywordEntries !== false, (v) => { config.injectKeywordEntries = v; });
   bindCheckbox("#na_dialogue_driven", () => config.dialogueDriven !== false, (v) => { config.dialogueDriven = v; });
   bindCheckbox("#na_strip_thinking", () => config.stripThinking !== false, (v) => { config.stripThinking = v; });
+  bindCheckbox("#na_show_state", () => config.showStateInMessage !== false, (v) => { config.showStateInMessage = v; });
 
   $html.find("#na_worldbook_source").val(config.worldbookSource || "auto");
   $html.find("#na_worldbook_source").on("change", function () {

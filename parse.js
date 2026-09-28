@@ -1,22 +1,17 @@
-// 输出解析：从模型返回文本里剥离「思考块」与「状态块」，只留叙事正文。
-// 设计原则：任何一个环节失败都不抛错、不吞内容——解析不出来就把原文当正文，
-// 由调用方决定怎么提示，绝不让用户看到空消息。
+// 输出解析：剥离思考块 → 切出状态块 → 把状态块补成完整 10 项（供展示与存档）。
+// 思考块永不进消息；状态块保留在消息末尾展示（可在设置里关闭）。
+// 设计原则：任何一个环节失败都不抛错、不吞内容。
 
 const THINK_TAGS = "thinking|analysis|reasoning|thought|scratchpad|think";
 
-// 成对出现的思考块（带闭合标签）
 const CLOSED_THINKING = new RegExp(
   `<\\s*(?:${THINK_TAGS})\\s*>[\\s\\S]*?<\\s*\\/\\s*(?:${THINK_TAGS})\\s*>`,
   "gi"
 );
-
-// ```thinking ... ``` 之类的围栏思考块
 const FENCED_THINKING = /```[ \t]*(?:thinking|analysis|reasoning|thought)[ \t]*\r?\n[\s\S]*?```/gi;
-
-// 未闭合的思考块（模型被截断）：思考一定在正文之前，所以从开标签起整段丢弃
+// 未闭合的思考块（模型被截断）：思考一定在正文之前，从开标签起整段丢弃
 const OPEN_THINKING = new RegExp(`<\\s*(?:${THINK_TAGS})\\s*>[\\s\\S]*$`, "i");
 
-// 状态块（正常闭合 / 被截断未闭合）
 const STATE_CLOSED = /<\s*state\s*>([\s\S]*?)<\s*\/\s*state\s*>/i;
 const STATE_OPEN_TAIL = /<\s*state\s*>([\s\S]*)$/i;
 const STATE_HEAD_RE = /\[\s*第\s*(\d+)\s*轮\s*\]\s*状态追踪\s*[：:]/g;
@@ -24,7 +19,23 @@ const STATE_HEAD_RE = /\[\s*第\s*(\d+)\s*轮\s*\]\s*状态追踪\s*[：:]/g;
 // 模型可能沿用的包裹标签：只删标签、保留内容
 const WRAPPER_TAGS = /<\/?\s*(?:context|narrative|story|正文|output)\s*>/gi;
 
-/** 剥离思考块。返回清理后的文本。 */
+/** 状态追踪的固定字段顺序（前 9 项单行，「重要记忆点」为末段）。 */
+export const STATE_FIELD_ORDER = [
+  "时间",
+  "区域",
+  "在场角色+BUFF",
+  "不在场角色",
+  "处女膜状态",
+  "做爱次数",
+  "角色好感度",
+  "当前态度",
+  "身体外貌",
+];
+
+const MEMORY_FIELD = "重要记忆点";
+const PLACEHOLDER_VALUES = /^(不变|同上|同前|无变化|照旧|略|—|-|n\/a|N\/A)$/;
+
+/** 剥离思考块。 */
 export function stripThinking(text) {
   if (!text || typeof text !== "string") return "";
   let out = text;
@@ -45,12 +56,7 @@ export function cleanBody(text) {
     .trim();
 }
 
-/**
- * 从（已剥离思考的）文本里切出状态块。
- * 优先认 <state>…</state>；模型没照做时退化为认最后一个「[第N轮]状态追踪：」，
- * 两者都没有则视为没有状态块（本轮不更新状态，不影响正文）。
- * @returns {{ body: string, stateText: string|null }}
- */
+/** 从（已剥离思考的）文本里切出状态块原文。 */
 export function splitStateBlock(text) {
   if (!text || typeof text !== "string") return { body: "", stateText: null };
 
@@ -63,7 +69,6 @@ export function splitStateBlock(text) {
   m = text.match(STATE_OPEN_TAIL);
   if (m) {
     const stateText = (m[1] || "").trim();
-    // 截断的状态块里仍要能看到状态追踪头，否则按正文处理
     if (/状态追踪/.test(stateText)) return { body: text.slice(0, m.index), stateText };
   }
 
@@ -79,33 +84,98 @@ export function splitStateBlock(text) {
   return { body: text, stateText: null };
 }
 
-/** 把状态块开头的轮次编号统一成当前轮次，并保证「状态追踪：」表头存在。 */
-export function normalizeStateTurn(stateText, turn) {
-  if (!stateText || typeof stateText !== "string") return "";
+/** 把状态块文本拆成字段与记忆点。 */
+export function parseStateFields(text) {
+  const fields = new Map();
+  const memories = [];
+  let inMemories = false;
+
+  for (const raw of String(text || "").replace(/\r\n?/g, "\n").split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) continue;
+    if (/^\s*\[\s*第\s*\d+\s*轮\s*\]\s*状态追踪/.test(line)) continue; // 头行
+
+    const m = line.match(/^\s*([^：:\-]{2,24})\s*[：:]\s*(.*)$/);
+    if (m) {
+      const name = m[1].trim();
+      const value = m[2].trim();
+      if (name === MEMORY_FIELD) {
+        inMemories = true;
+        if (value) memories.push(value);
+        continue;
+      }
+      if (STATE_FIELD_ORDER.includes(name)) {
+        inMemories = false;
+        fields.set(name, value);
+        continue;
+      }
+    }
+    if (inMemories && /^\s*[-•*]/.test(line)) memories.push(line.trim());
+  }
+
+  return { fields, memories };
+}
+
+/**
+ * 把状态块补成完整 10 项。
+ * 缺失、空值或写了「不变/同上」这类占位值的字段，用上一轮同名字段补；都没有则标「（暂无数据）」。
+ * @returns {{ text: string, filled: string[], fieldCount: number }}
+ */
+export function formatStateBlock(stateText, turn, prevText = "") {
+  const cur = parseStateFields(stateText || "");
+  const prev = parseStateFields(prevText || "");
+  const filled = [];
+  const lines = [];
+
+  for (const name of STATE_FIELD_ORDER) {
+    let value = (cur.fields.get(name) || "").trim();
+    if (!value || PLACEHOLDER_VALUES.test(value)) {
+      const fallback = (prev.fields.get(name) || "").trim();
+      if (fallback && !PLACEHOLDER_VALUES.test(fallback)) {
+        value = fallback;
+        filled.push(name);
+      } else if (!value) {
+        value = "（暂无数据）";
+      }
+    }
+    lines.push(`${name}：${value}`);
+  }
+
+  let memories = cur.memories.filter(Boolean);
+  if (memories.length === 0) {
+    const prevMemories = prev.memories.filter(Boolean);
+    if (prevMemories.length > 0) {
+      memories = prevMemories;
+      filled.push(MEMORY_FIELD);
+    }
+  }
+  lines.push(`${MEMORY_FIELD}：`);
+  for (const item of memories) lines.push(item.startsWith("-") ? item : `- ${item}`);
+
   const t = Number(turn);
-  const body = stateText.trim();
-  const hasTurn = /\[\s*第\s*\d+\s*轮\s*\]/.test(body);
-  const withHeader = /状态追踪\s*[：:]/.test(body) ? body : "状态追踪：\n" + body;
-  if (!Number.isFinite(t) || t <= 0) return withHeader;
-  if (hasTurn) return withHeader.replace(/\[\s*第\s*\d+\s*轮\s*\]/, `[第${t}轮]`);
-  return `[第${t}轮]${withHeader.replace(/^\s*状态追踪/, "状态追踪")}`;
+  const head = Number.isFinite(t) && t > 0 ? `[第${t}轮]状态追踪：` : "状态追踪：";
+  return { text: `${head}\n${lines.join("\n")}`, filled, fieldCount: STATE_FIELD_ORDER.length + 1 };
+}
+
+/** 兼容旧调用：把状态块补齐并统一轮次编号。 */
+export function normalizeStateTurn(stateText, turn) {
+  return formatStateBlock(stateText, turn).text;
 }
 
 /**
  * 完整解析一次模型输出。
- * @param raw 模型原始返回文本
- * @param turn 本轮轮次（用于归一化状态块编号）
- * @param doStripThinking 是否剥离思考块（默认 true）
- * @returns {{ body, stateText, hadThinking, rawLength }}
+ * @returns {{ body: string, stateText: string|null, filled: string[], hadThinking: boolean, rawLength: number }}
  */
 export function parseModelOutput(raw, turn, doStripThinking = true) {
   const text = typeof raw === "string" ? raw : String(raw ?? "");
   const withoutThinking = doStripThinking ? stripThinking(text) : text;
   const hadThinking = withoutThinking.length !== text.length;
   const { body, stateText } = splitStateBlock(withoutThinking);
+  const formatted = stateText ? formatStateBlock(stateText, turn) : null;
   return {
     body: cleanBody(body),
-    stateText: stateText ? normalizeStateTurn(stateText, turn) : null,
+    stateText: formatted ? formatted.text : null,
+    filled: formatted ? formatted.filled : [],
     hadThinking,
     rawLength: text.length,
   };
