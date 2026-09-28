@@ -1,297 +1,171 @@
-import { getSTContext, extractPresetContext, getLatestUserInput, isApiFailure, getConversationId } from "./utils.js";
-import { PLACEHOLDER } from "./constants.js";
+// 拦截层：把 ST 这一次生成请求的 prompt 换成我们自己的 messages（全程只这一次 API 调用），
+// 生成结束后把返回值剥成「纯正文」写回消息，并把状态块交给 engine 存档。
+//
+// 与旧版的关键区别：
+// 1) 不再用中继占位符 + 自己 generateRaw，因此一轮只打一次 API，不会产生僵尸请求；
+// 2) 只接管用户主动发起的生成（normal/continue/regenerate/swipe/impersonate），
+//    其它扩展的 quiet 调用一律放行——旧版会连别人的请求一起改写，这就是「挡住 API」的来源；
+// 3) 无重试、无降级、无超时，失败就是失败，不叠加请求。
 
-export class SillyTavernBridge {
-  constructor(orchestrator) {
-    this.orchestrator = orchestrator;
+import { getSTContext, getLatestUserInput } from "./utils.js";
+import { buildMessages } from "./prompt.js";
+import { parseModelOutput } from "./parse.js";
+import { EMPTY_OUTPUT_NOTICE } from "./constants.js";
+
+const GEN_NORMAL = "normal";
+const GEN_CONTINUE = "continue";
+const GEN_REGENERATE = "regenerate";
+const GEN_SWIPE = "swipe";
+const GEN_IMPERSONATE = "impersonate";
+const USER_GENERATION_TYPES = new Set([GEN_NORMAL, GEN_CONTINUE, GEN_REGENERATE, GEN_SWIPE, GEN_IMPERSONATE]);
+const CONTINUATION_TYPES = new Set([GEN_CONTINUE, GEN_SWIPE, GEN_REGENERATE]);
+
+export class NarrativeBridge {
+  constructor(engine) {
+    this.engine = engine;
     this.enabled = true;
-    this.wasIntercepted = false;
-    this.isPipelineRunning = false;
-    this._aborted = false;
-    this._generationType = null;
-    this._savedUserInput = null;
-    this._generationCompleted = true;
-    this._pipelineCompleteCbs = [];
-    this._stopEventHandler = null;
-    this._boundOnPromptReady = this._onPromptReady.bind(this);
-    this._boundOnGenerationEnded = this._onGenerationEnded.bind(this);
-    this._boundOnGenerationStarted = this._onGenerationStarted.bind(this);
-    this._boundOnMessageDeleted = this._onMessageDeleted.bind(this);
+    this._genType = null;
+    this._plan = null;
+    this._boundStarted = this._onGenerationStarted.bind(this);
+    this._boundPromptReady = this._onPromptReady.bind(this);
+    this._boundEnded = this._onGenerationEnded.bind(this);
   }
-
-  onPipelineComplete(cb) { this._pipelineCompleteCbs.push(cb); }
 
   install() {
     const ctx = getSTContext();
-    if (!ctx) { console.error("[NarrativeAgent] ST context not available"); return; }
-    ctx.eventSource.on(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, this._boundOnPromptReady);
-    ctx.eventSource.on(ctx.eventTypes.GENERATION_ENDED, this._boundOnGenerationEnded);
-    ctx.eventSource.on(ctx.eventTypes.GENERATION_STARTED, this._boundOnGenerationStarted);
-    ctx.eventSource.on(ctx.eventTypes.MESSAGE_DELETED, this._boundOnMessageDeleted);
-    console.log("[NarrativeAgent] Bridge installed, enabled:", this.enabled);
+    if (!ctx?.eventSource) {
+      console.error("[NarrativeAgent] ST eventSource 不可用，拦截层未安装");
+      return false;
+    }
+    const t = ctx.eventTypes;
+    ctx.eventSource.on(t.GENERATION_STARTED, this._boundStarted);
+    ctx.eventSource.on(t.CHAT_COMPLETION_PROMPT_READY, this._boundPromptReady);
+    ctx.eventSource.on(t.GENERATION_ENDED, this._boundEnded);
+    console.log("[NarrativeAgent] 拦截层已安装（单次调用模式）");
+    return true;
   }
 
   uninstall() {
     const ctx = getSTContext();
-    if (!ctx) return;
-    ctx.eventSource.removeListener(ctx.eventTypes.CHAT_COMPLETION_PROMPT_READY, this._boundOnPromptReady);
-    ctx.eventSource.removeListener(ctx.eventTypes.GENERATION_ENDED, this._boundOnGenerationEnded);
-    ctx.eventSource.removeListener(ctx.eventTypes.GENERATION_STARTED, this._boundOnGenerationStarted);
-    ctx.eventSource.removeListener(ctx.eventTypes.MESSAGE_DELETED, this._boundOnMessageDeleted);
+    if (!ctx?.eventSource) return;
+    const t = ctx.eventTypes;
+    ctx.eventSource.removeListener(t.GENERATION_STARTED, this._boundStarted);
+    ctx.eventSource.removeListener(t.CHAT_COMPLETION_PROMPT_READY, this._boundPromptReady);
+    ctx.eventSource.removeListener(t.GENERATION_ENDED, this._boundEnded);
   }
 
   _onGenerationStarted(type) {
-    this._generationType = type;
-    this._generationCompleted = false;
-    console.log("[NarrativeAgent] GENERATION_STARTED, type:", type);
-  }
-
-  // 从最新AI消息正文提取状态追踪段（F主）：查找 [第N轮]状态追踪： 到 结尾/下一个[第N轮] 之间
-  // v0.3.30 增强：回溯最近 N 条 AI 消息（默认10条），找最后一条含状态块的——
-  // 避免中间某轮 summary 为空导致注入断链（死循环），能从更早的历史消息续上状态
-  // v0.3.31 增强：①跨消息取【轮次编号最大】的状态块（而非“最新消息里的最后一块”——
-  //   失败轮次可能复述旧轮次状态，按消息新旧取会拿到停滞的旧状态；按轮次取保证注入最先进的状态）
-  //   ②状态块捕获在 `</summary>` 前结束（旧逻辑 `$` 匹配到消息末尾，把 `</summary>` 尾巴吞进状态文本）
-  _extractLatestStateTrackingFromChat(chat, maxScan = 10) {
-    if (!chat || !Array.isArray(chat) || chat.length === 0) return null;
-    let scanned = 0;
-    let best = null; // { round, text }
-    // 从后往前扫最近 N 条 AI 消息
-    for (let i = chat.length - 1; i >= 0 && scanned < maxScan; i--) {
-      const msg = chat[i];
-      if (!msg || msg.is_user) continue;
-      const text = (msg.mes || msg.content || "").trim();
-      if (!text) continue;
-      scanned++;
-      // 同时扫描：①消息全文 ②<summary> 块内容（正文与摘要都可能含状态块）
-      const sources = [text];
-      const sumRe = /<summary>([\s\S]*?)<\/summary>/gi;
-      let sm;
-      while ((sm = sumRe.exec(text)) !== null) sources.push(sm[1]);
-      let msgBest = null; // 本消息内的最佳块
-      for (const src of sources) {
-        // 状态追踪段：从 [第N轮]状态追踪： 开始，到 下一个[第N轮] / </summary> / 文本结尾 结束
-        const re = /\[第\s*(\d+)\s*轮\]\s*状态追踪[：:]\s*\n?([\s\S]*?)(?=\n\s*\[第\s*\d+\s*轮\]|\n\s*<\/summary>|$)/g;
-        let mm;
-        while ((mm = re.exec(src)) !== null) {
-          if (mm[2] && mm[2].trim()) {
-            const round = parseInt(mm[1], 10) || 0;
-            // 清理残留标签尾巴（保险：万一捕获段仍含 </summary> 等）
-            const clean = mm[2].trim().replace(/<\/?summary>/gi, "").replace(/<[^>]*>\s*$/g, "").trim();
-            if (!clean) continue;
-            // 同消息内：轮次更大者胜；同轮次取后出现者（消息内靠后 = 更新）
-            if (!msgBest || round >= msgBest.round) msgBest = { round, text: clean };
-          }
-        }
-      }
-      // 跨消息：轮次更大者胜；同轮次保留先扫到者（从后往前扫 → 先扫到 = 消息更新）
-      if (msgBest && (!best || msgBest.round > best.round)) best = msgBest;
-    }
-    if (!best) return null;
-    console.log("[NarrativeAgent] F主：提取状态追踪 (第" + best.round + "轮, " + best.text.length + " chars)");
-    return "[第" + best.round + "轮]状态追踪：\n" + best.text;
-  }
-
-  _onMessageDeleted(newChatLength) {
-    if (!this.enabled || this.isPipelineRunning) return;
-
-    if (newChatLength <= 1) {
-      console.log("[NarrativeAgent] MESSAGE_DELETED, chat near-empty, full reset. newChatLength:", newChatLength);
-      this.orchestrator.rollbackToTurn(0);
-      return;
-    }
-
-    // 删除消息后回滚到最新完整轮次的 checkpoint：
-    // 状态追踪/摘要条目存于 summaryStore + checkpoint，回滚后随消息一并回到被删前的轮次，
-    // 避免出现「#103 的状态错位到 #102」的情况（与 WST 独立快照模型的本质区别）
-    try {
-      const ctx = getSTContext();
-      const rawChat = ctx?.chat || [];
-      const { turns } = this.orchestrator._extractTurnHistoryFromChat(rawChat);
-      let maxTurn = 0;
-      for (const t of turns) {
-        if (t.turnNum != null && t.turnNum > maxTurn) maxTurn = t.turnNum;
-      }
-      // 仅当最新完整轮次确实减少时才回滚（删的是尾部消息）；
-      // 删除历史中间消息不影响最新轮次，只失效缓存即可
-      if (maxTurn < this.orchestrator.turnCounter) {
-        console.log("[NarrativeAgent] MESSAGE_DELETED, newChatLength:", newChatLength,
-          "最新完整轮次:", maxTurn, "< turnCounter:", this.orchestrator.turnCounter, "→ 回滚到该轮次 checkpoint");
-        this.orchestrator.rollbackToTurn(maxTurn);
-      } else {
-        console.log("[NarrativeAgent] MESSAGE_DELETED, newChatLength:", newChatLength,
-          "最新完整轮次:", maxTurn, "未减少，仅失效预取缓存");
-        this.orchestrator.invalidatePrefetch();
-      }
-    } catch (e) {
-      console.warn("[NarrativeAgent] MESSAGE_DELETED 回滚失败，仅失效预取缓存:", e.message);
-      this.orchestrator.invalidatePrefetch();
-    }
+    this._genType = typeof type === "string" && type ? type : GEN_NORMAL;
+    // 新一轮开始：上一轮若因异常没走到收尾，这里丢掉残留计划，避免串轮
+    this._plan = null;
   }
 
   _onPromptReady(data) {
-    if (!this.enabled || this.isPipelineRunning) return;
-    this._aborted = false;
-    console.log("[NarrativeAgent] 拦截 CHAT_COMPLETION_PROMPT_READY, 原始消息数:", data.chat?.length);
-
-    if (data.chat && data.chat.length > 0) {
-      const sample = data.chat[0];
-      console.log("[NA:bridge] data.chat[0] keys:", Object.keys(sample), "hasMes:", "mes" in sample, "hasContent:", "content" in sample, "hasIs_user:", "is_user" in sample, "hasRole:", "role" in sample);
-      console.log("[NA:bridge] data.chat[0] role:", sample.role, "is_user:", sample.is_user, "mes首80字:", sample.mes?.substring(0, 80), "content首80字:", sample.content?.substring(0, 80));
-    }
-
-    this.orchestrator.worldInfoResolver.buildFormattingSet().catch(e => console.warn("[NA] buildFormattingSet in _onPromptReady failed:", e.message));
-
-    const ctx = getSTContext();
-    const rawChat = ctx?.chat || [];
-    console.log("[NA:bridge] ctx.chat (前端展示消息) 长度:", rawChat.length);
-    if (rawChat.length > 0) {
-      const rawSample = rawChat[0];
-      console.log("[NA:bridge] ctx.chat[0] keys:", Object.keys(rawSample), "is_user:", rawSample.is_user, "mes长度:", rawSample.mes?.length);
-    }
-
-    this._savedUserInput = getLatestUserInput(rawChat);
-
-    // ===== 后台注入状态追踪（F主+E兜底）：用户发送时，从最新AI消息提取状态追踪拼入用户消息 =====
-    // 方案3+1：注入前校验聊天归属 — 新建聊天/切换窗口期 orchestrator 可能仍挂着旧聊天 store，
-    // 归属不一致时禁止注入（新聊天应从零开始），避免跨聊天污染
-    try {
-      const curChatId = getConversationId();
-      const boundChatId = this.orchestrator.currentChatId;
-      const chatMatch = boundChatId && (String(boundChatId) === String(curChatId));
-      if (!chatMatch) {
-        console.log("[NarrativeAgent] ⛔ 聊天归属不匹配，跳过状态追踪注入 (cur=" + curChatId + ", bound=" + boundChatId + ")");
-        this.orchestrator.clearInjectedStateTracking();
-      } else {
-        // F主：从最新AI消息正文提取
-        const latestTracking = this._extractLatestStateTrackingFromChat(rawChat);
-        if (latestTracking) {
-          this.orchestrator.setInjectedStateTracking(latestTracking);
-        } else {
-          // E兜底：消息提取不到时用 summaryStore 最新条目（已确认归属一致）
-          const fallback = this.orchestrator.summaryStore?.getLatestStateTracking?.();
-          if (fallback) {
-            this.orchestrator.setInjectedStateTracking(fallback);
-            console.log("[NarrativeAgent] 状态追踪注入：E兜底 summaryStore");
-          }
-        }
+    if (!this.enabled) return;
+    if (!USER_GENERATION_TYPES.has(this._genType)) {
+      // 不是用户主动发起的生成（例如其它扩展的 quiet 调用）→ 原样放行，不改写它的 prompt
+      if (this._genType == null && !this._warnedNoType) {
+        this._warnedNoType = true;
+        console.warn(
+          "[NarrativeAgent] 收到 prompt 就绪事件但没有 GENERATION_STARTED，本次不接管。若每轮都不生效，请反馈 ST 版本。"
+        );
       }
-    } catch (injErr) {
-      console.warn("[NarrativeAgent] 状态追踪注入失败:", injErr.message);
+      return;
     }
-    console.log("[NarrativeAgent] 已保存用户输入:", this._savedUserInput?.substring(0, 80), "长度:", this._savedUserInput?.length);
+    const ctx = getSTContext();
+    const chat = Array.isArray(data?.chat) ? data.chat : null;
+    if (!chat || chat.length === 0) return;
 
-    const { turns } = this.orchestrator._extractTurnHistoryFromChat(rawChat);
-    this.orchestrator.applyChatExtractedContext(turns);
-    console.log("[NarrativeAgent] 从chat提取轮次:", turns.length);
+    const last = chat[chat.length - 1];
+    const lastIsUser = !!last && (last.is_user === true || last.role === "user");
+    const isContinuation = CONTINUATION_TYPES.has(this._genType);
+    if (!lastIsUser && !isContinuation) return;
 
-    if (this.orchestrator.config.presetMode === "split") {
-      const presetCtx = extractPresetContext();
-      this.orchestrator.setPresetContext(presetCtx);
-      console.log("[NarrativeAgent] 预设上下文已提取, planningContext长度:", presetCtx.planningContext.length, "writingSystemContext长度:", presetCtx.writingSystemContext.length, "writingUserContext长度:", presetCtx.writingUserContext.length);
-    } else {
-      this.orchestrator.setPresetContext(null);
+    const lastText = String(last?.mes ?? last?.content ?? "").trim();
+    const userInput = lastIsUser ? lastText : String(getLatestUserInput(ctx?.chat || chat) || "").trim();
+    const turn = this.engine.nextTurn();
+
+    const worldEntries = this.engine.collectWorldEntries(userInput);
+    const { messages, systemChars, userChars } = buildMessages({
+      config: this.engine.config,
+      turn,
+      worldEntries,
+      characterInfo: this.engine.characterInfo(),
+      personaText: this.engine.personaText(),
+      prevState: this.engine.prevState(),
+      history: this.engine.history(),
+      userInput,
+    });
+
+    chat.splice(0, chat.length, ...messages);
+    if (data && typeof data.max_tokens === "number" && Number(this.engine.config.responseTokens) > 0) {
+      data.max_tokens = Number(this.engine.config.responseTokens);
     }
 
-    data.chat.splice(0, data.chat.length);
-    data.chat.push({ role: "system", content: "You are a relay. You must output exactly the following text and nothing else: " + PLACEHOLDER });
-    data.chat.push({ role: "user", content: "Relay the designated text now." });
-    this.wasIntercepted = true;
+    this._plan = { turn, userInput };
+    console.log(
+      `[NarrativeAgent] 第${turn}轮：单次调用已就绪（system ${systemChars} 字符 / user ${userChars} 字符 / 世界书 ${worldEntries.length} 条）`
+    );
   }
 
   async _onGenerationEnded() {
-    this._generationCompleted = true;
-
-    if (!this.enabled || this.isPipelineRunning || !this.wasIntercepted || this._aborted) return;
-    this.wasIntercepted = false;
+    const plan = this._plan;
+    this._plan = null;
+    this._genType = null;
+    if (!plan) return;
 
     const ctx = getSTContext();
-    if (!ctx) return;
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : null;
+    if (!chat || chat.length === 0) return;
 
-    const lastMsg = ctx.chat[ctx.chat.length - 1];
-    if (!lastMsg || lastMsg.is_user || !(lastMsg.mes || "").includes(PLACEHOLDER)) {
-      console.warn("[NarrativeAgent] 中继未正常完成（可能被用户取消或API错误），跳过Pipeline");
+    const index = chat.length - 1;
+    const msg = chat[index];
+    if (!msg || msg.is_user === true || msg.role === "user") {
+      console.warn("[NarrativeAgent] 收尾时最后一条不是 AI 消息，跳过处理（不改动消息）");
       return;
     }
 
-    this.isPipelineRunning = true;
+    const raw = String(msg.mes ?? msg.content ?? "");
+    const stripThinking = this.engine.config?.stripThinking !== false;
+    const { body, stateText, hadThinking } = parseModelOutput(raw, plan.turn, stripThinking);
 
-    // 切换 UI 到"生成中"状态：显示停止按钮，禁用发送路径
-    $('#send_but').prop('disabled', true).css('pointer-events', 'none');
-    $('#option_regenerate, #option_continue, #mes_continue, #mes_impersonate')
-      .prop('disabled', true).css('pointer-events', 'none');
-    $('#mes_stop').css('display', 'flex');
-    document.body.dataset.generating = 'true';
-    this._stopEventHandler = () => { this.orchestrator._shouldCancel = true; };
-    ctx.eventSource.on(ctx.eventTypes.GENERATION_STOPPED, this._stopEventHandler);
+    if (!body && raw.trim()) {
+      console.warn("[NarrativeAgent] 解析后正文为空，原始返回如下（仅日志）:\n" + raw.slice(0, 2000));
+    }
 
-    const chat = ctx.chat;
-    const isRegeneration = this._generationType === "swipe" || this._generationType === "regenerate";
-    this._generationType = null;
+    msg.mes = body || EMPTY_OUTPUT_NOTICE;
+    try {
+      if (typeof ctx.updateMessageBlock === "function") ctx.updateMessageBlock(index, msg);
+    } catch (e) {
+      console.warn("[NarrativeAgent] 刷新消息显示失败:", e?.message);
+    }
+
+    if (stateText) {
+      this.engine.applyState(stateText, plan.turn);
+    } else {
+      console.warn(`[NarrativeAgent] 第${plan.turn}轮未解析出状态块，状态保持不变`);
+    }
+
+    this.engine.afterTurn(plan.turn);
 
     try {
-      let userInput = getLatestUserInput(chat);
-      if (!userInput && this._savedUserInput) {
-        userInput = this._savedUserInput;
-        console.log("[NarrativeAgent] 使用保存的用户输入:", userInput?.substring(0, 80));
-      }
-      this._savedUserInput = null;
-      console.log("[NarrativeAgent] Pipeline start, userInput preview:", userInput?.substring(0, 60), "isRegeneration:", isRegeneration);
-
-      const lastMsgIndex = chat.length - 1;
-      this.orchestrator.onProgress((status) => {
-        const msg = chat[lastMsgIndex];
-        if (msg && !msg.is_user) {
-          msg.mes = status;
-          try { ctx.updateMessageBlock(lastMsgIndex, msg); } catch (e) { /* ignore */ }
-        }
-      });
-
-      const result = await this.orchestrator.pipeline(userInput, isRegeneration, chat);
-
-      if (lastMsg && !lastMsg.is_user) {
-        lastMsg.mes = result.finalOutput || result.narrative;
-        lastMsg.extra = lastMsg.extra || {};
-        lastMsg.extra.state_panel = null;
-        lastMsg.extra.writing_guide = result.writingGuide;
-        lastMsg.extra.events = result.events;
-        ctx.updateMessageBlock(chat.length - 1, lastMsg);
-      }
-
       if (typeof ctx.saveChat === "function") await ctx.saveChat();
-      console.log("[NarrativeAgent] Pipeline 执行完成, 输出长度:", result.finalOutput.length);
-
-      await this.orchestrator.prefetchState();
-
-      ctx.eventSource.emit(ctx.eventTypes.MESSAGE_EDITED, chat.length - 1);
-      ctx.eventSource.emit(ctx.eventTypes.MESSAGE_UPDATED, chat.length - 1);
-      ctx.eventSource.emit(ctx.eventTypes.CHARACTER_MESSAGE_RENDERED, chat.length - 1);
-
-      for (const cb of this._pipelineCompleteCbs) {
-        try { await cb(result); } catch (err) { console.error("[NarrativeAgent] Callback error:", err); }
-      }
-    } catch (err) {
-      console.error("[NarrativeAgent] Pipeline 执行失败:", err);
-      if (lastMsg) {
-        if (isApiFailure(err)) {
-          lastMsg.mes = "API请求失败或被打断，工作流终止！";
-        } else {
-          lastMsg.mes = "工作流执行异常，请检查控制台日志。";
-        }
-        ctx.updateMessageBlock(chat.length - 1, lastMsg);
-      }
-      try { ctx.eventSource.emit(ctx.eventTypes.MESSAGE_EDITED, chat.length - 1); } catch {}
-      try { ctx.eventSource.emit(ctx.eventTypes.MESSAGE_UPDATED, chat.length - 1); } catch {}
-    } finally {
-      // 恢复 UI 到正常状态
-      ctx.eventSource.removeListener(ctx.eventTypes.GENERATION_STOPPED, this._stopEventHandler);
-      this._stopEventHandler = null;
-      $('#send_but').prop('disabled', false).css('pointer-events', '');
-      $('#option_regenerate, #option_continue, #mes_continue, #mes_impersonate')
-        .prop('disabled', false).css('pointer-events', '');
-      $('#mes_stop').css('display', 'none');
-      delete document.body.dataset.generating;
-      this.isPipelineRunning = false;
+    } catch (e) {
+      console.warn("[NarrativeAgent] 保存聊天失败:", e?.message);
     }
+
+    for (const eventName of ["MESSAGE_EDITED", "MESSAGE_UPDATED", "CHARACTER_MESSAGE_RENDERED"]) {
+      try {
+        const evt = ctx.eventTypes?.[eventName];
+        if (evt) ctx.eventSource.emit(evt, index);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    console.log(
+      `[NarrativeAgent] 第${plan.turn}轮完成：正文 ${body.length} 字符` +
+        `${hadThinking ? "（已剥离思考块）" : ""}${stateText ? "，状态已更新" : "，状态未变"}`
+    );
   }
 }

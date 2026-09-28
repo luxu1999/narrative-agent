@@ -1,30 +1,26 @@
 <div id="narrative_agent_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Narrative Agent</b>
+            <b>Narrative Agent（精简版 · 单次调用）</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <input type="button" class="menu_button" id="na_open_tutorial" value="查看教程">
-
             <label class="checkbox_label">
                 <input type="checkbox" id="na_enabled" name="na_enabled">
-                <span>启用多Agent叙事系统</span>
+                <span>启用叙事引擎</span>
             </label>
-            <small>启用后，消息发送将经过多Agent流水线（规划 → 工具执行 → 写作 → 合并分析）处理。</small>
+            <small>启用后每次发送只调用一次 API：插件用自己的指令替换 prompt，返回内容剥离思考块与状态块后，只把<b>正文</b>写进消息。</small>
 
             <hr>
 
-            <h4>预设处理模式</h4>
+            <h4>历史窗口</h4>
             <div class="flex-container">
-                <label>模式:</label>
-                <select id="na_preset_mode" style="width: 200px;">
-                    <option value="none">无（原版插件行为）</option>
-                    <option value="split">分割注入（系统提示→规划Agent，用户提示→写作Agent）</option>
-                    <option value="adapted" disabled>适配注入（开发中）</option>
-                </select>
+                <label>最小轮数 (n):</label>
+                <input type="number" id="na_history_window" min="1" max="50" step="1" style="width: 80px;">
+                <label style="margin-left: 8px;">生长缓冲 (m):</label>
+                <input type="number" id="na_history_growth" min="0" max="50" step="1" style="width: 80px;">
             </div>
-            <small>选择如何处理酒馆预设中的提示词。分割注入模式会将系统提示注入规划Agent、用户提示注入写作Agent。</small>
+            <small>窗口在 n ~ n+m 轮之间生长：涨到 n+m 后一次裁掉最早的 m+1 轮回到 n，让历史前缀保持稳定以提高缓存命中。</small>
 
             <hr>
 
@@ -34,59 +30,52 @@
                 <input type="number" id="na_min_reply_chars" min="0" max="9999" step="50" style="width: 100px;">
                 <label style="margin-left: 8px;">最大字数:</label>
                 <input type="number" id="na_max_reply_chars" min="0" max="9999" step="50" style="width: 100px;">
-                <small>（0 = 不限，默认 800~1200）</small>
             </div>
-            <small>写作Agent回复正文（状态追踪块不计入）固定按此区间生成。0 = 不限。</small>
+            <small>只约束正文（状态块不计入）。0 表示不设该端限制。</small>
 
             <hr>
 
-            <h4>剧情推进方式</h4>
-            <label class="checkbox_label">
-                <input type="checkbox" id="na_dialogue_driven" name="na_dialogue_driven">
-                <span>对话驱动（剧情通过角色间的多轮对话推进）</span>
-            </label>
-            <small>开启后，剧情主要以角色间的多轮对话交锋推进，叙述描写只作辅助；关闭则保持原有叙述风格。规划Agent与写作Agent均生效。</small>
-
-            <hr>
-
-            <h4>世界书来源</h4>
+            <h4>世界书</h4>
             <div class="flex-container">
                 <label>来源:</label>
-                <select id="na_worldbook_source" style="width: 200px;">
-                    <option value="auto">自动（优先卡包内嵌，回退到世界书库）</option>
+                <select id="na_worldbook_source" style="width: 220px;">
+                    <option value="auto">自动（优先卡包内嵌，回退世界书库）</option>
                     <option value="card">卡包内嵌（character_book）</option>
                     <option value="world">世界书库（按名称加载）</option>
                 </select>
             </div>
-            <small>选择世界书条目的加载来源。卡包内嵌模式适用于已通过 narrative-agent-worldbook skill 规范化并嵌入卡包的世界书。</small>
+            <label class="checkbox_label">
+                <input type="checkbox" id="na_inject_constant" name="na_inject_constant">
+                <span>注入常驻条目</span>
+            </label>
+            <label class="checkbox_label">
+                <input type="checkbox" id="na_inject_keyword" name="na_inject_keyword">
+                <span>注入关键词命中条目</span>
+            </label>
+            <small>格式化条目（[TOOL:*] / [UI] / [initvar] / [mvu_update]）一律不注入。条目在初始化与每轮结束后预取，供下一轮同步拼 prompt 使用。</small>
 
             <hr>
 
-            <h4>并行处理</h4>
+            <h4>输出处理</h4>
             <label class="checkbox_label">
-                <input type="checkbox" id="na_parallel_execution" name="na_parallel_execution">
-                <span>启用并行处理</span>
+                <input type="checkbox" id="na_strip_thinking" name="na_strip_thinking">
+                <span>剥离思考块（thinking / analysis / reasoning 等）</span>
             </label>
-            <small>开启后，不依赖合并分析结果的 post_pipeline 工具将与分析 Agent 并行调用，可缩短 Pipeline 整体耗时约 30-40%。依赖 story_summary / state_summary / known_context 的工具仍会在合并分析之后串行执行。</small>
-
-            <hr>
-
-            <h4>原文召回</h4>
             <label class="checkbox_label">
-                <input type="checkbox" id="na_text_recall" name="na_text_recall">
-                <span>启用原文召回</span>
+                <input type="checkbox" id="na_dialogue_driven" name="na_dialogue_driven">
+                <span>对话驱动推进剧情</span>
             </label>
-            <small>开启后，规划 Agent 可在输出中声明需要召回的轮次号，插件从历史对话中提取对应原文并注入写作 Agent 的 prompt。启用后强制分离规划与写作 Agent（即使无 planning 工具也不回退到合并输出模式）。</small>
 
             <hr>
 
             <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px;">
                 <input type="button" class="menu_button" id="na_reset_state" value="重置状态">
                 <input type="button" class="menu_button" id="na_refresh_state" value="刷新显示">
-                <input type="button" class="menu_button" id="na_reload_worldbook_cache" value="刷新世界书缓存">
-                <input type="button" class="menu_button" id="na_export_data" value="导出数据">
-                <input type="button" class="menu_button" id="na_import_data" value="导入数据">
+                <input type="button" class="menu_button" id="na_reload_worldbook" value="刷新世界书缓存">
             </div>
+
+            <h4 style="margin-top: 10px;">当前状态</h4>
+            <div id="na_state_display" style="max-height: 220px; overflow: auto; white-space: pre-wrap; font-size: 12px; opacity: 0.85;"></div>
         </div>
     </div>
 </div>

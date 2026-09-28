@@ -1,99 +1,121 @@
-import { getSTContext, getConversationId, deepMerge } from "./utils.js";
-import { StateManager, SummaryStore } from "./state.js";
+// 配置与每聊天状态的持久化。存储位置：ctx.extensionSettings["narrative-agent"]。
+// 每聊天的状态只有两个字段：tracking（最近一轮状态追踪）与 turn（已完成轮次）。
+
+import { getSTContext, deepMerge } from "./utils.js";
 import { DEFAULT_CONFIG, EXTENSION_ID } from "./constants.js";
+
+function extRoot() {
+  const ctx = getSTContext();
+  if (!ctx) return null;
+  if (!ctx.extensionSettings) ctx.extensionSettings = {};
+  if (!ctx.extensionSettings[EXTENSION_ID]) ctx.extensionSettings[EXTENSION_ID] = {};
+  return ctx.extensionSettings[EXTENSION_ID];
+}
+
+function flush() {
+  const ctx = getSTContext();
+  try {
+    if (ctx && typeof ctx.saveSettingsDebounced === "function") ctx.saveSettingsDebounced();
+  } catch {
+    /* ignore */
+  }
+}
 
 export function loadConfig() {
   try {
-    const ctx = getSTContext();
-    if (!ctx) return { ...DEFAULT_CONFIG };
-    const saved = ctx.extensionSettings?.[EXTENSION_ID]?.config;
-    if (saved && typeof saved === "object") {
-      // v0.3.27 → v0.3.28 迁移：旧版单值 maxReplyChars（0=不限）→ 新版区间 min/maxReplyChars
-      // 必须在 deepMerge 之前检查原始配置（合并后默认值会掩盖旧版特征）
-      let configSource = saved;
-      const savedWriting = saved?.agents?.writing;
-      if (savedWriting && savedWriting.minReplyChars === undefined
-          && Object.prototype.hasOwnProperty.call(savedWriting, "maxReplyChars")) {
-        const patch = savedWriting.maxReplyChars > 0
-          ? { minReplyChars: 0, maxReplyChars: savedWriting.maxReplyChars } // 旧版正数上限 → 保留为上限
-          : { minReplyChars: DEFAULT_CONFIG.agents.writing.minReplyChars, maxReplyChars: DEFAULT_CONFIG.agents.writing.maxReplyChars }; // 旧版未配置 → 新默认区间
-        configSource = {
-          ...saved,
-          agents: { ...(saved.agents || {}), writing: { ...savedWriting, ...patch } },
-        };
-      }
-      return deepMerge({ ...DEFAULT_CONFIG }, configSource);
-    }
-  } catch { /* ignore */ }
+    const root = extRoot();
+    const saved = root?.config;
+    if (saved && typeof saved === "object") return deepMerge({ ...DEFAULT_CONFIG }, saved);
+  } catch {
+    /* ignore */
+  }
   return { ...DEFAULT_CONFIG };
 }
 
 export function saveConfig(config) {
   try {
-    const ctx = getSTContext();
-    if (!ctx) return;
-    ctx.extensionSettings[EXTENSION_ID] = ctx.extensionSettings[EXTENSION_ID] || {};
-    ctx.extensionSettings[EXTENSION_ID].config = config;
-    ctx.extensionSettings[EXTENSION_ID].enabled = config.enabled;
-    if (typeof ctx.saveSettingsDebounced === "function") ctx.saveSettingsDebounced();
-  } catch { /* ignore */ }
+    const root = extRoot();
+    if (!root) return;
+    root.config = config;
+    root.enabled = config.enabled === true;
+    flush();
+  } catch {
+    /* ignore */
+  }
 }
 
-export function loadOrCreateState(chatId) {
-  try {
-    const ctx = getSTContext();
-    const ext = ctx?.extensionSettings?.[EXTENSION_ID];
-    const chatStates = ext?.chatStates;
-    if (chatStates && chatStates[chatId] && chatStates[chatId].gameState) {
-      return StateManager.fromDict(chatStates[chatId].gameState);
-    }
-    if (ext?.gameState) {
-      console.log("[NarrativeAgent] Migrating legacy global state to chat:", chatId);
-      return StateManager.fromDict(ext.gameState);
-    }
-  } catch { /* ignore */ }
-  return new StateManager();
+export function extractTurnFromText(text) {
+  const m = String(text || "").match(/\[\s*第\s*(\d+)\s*轮\s*\]/);
+  return m ? parseInt(m[1], 10) : 0;
 }
 
-export function loadOrCreateSummary(chatId) {
+/** 读取某聊天状态；兼容旧版 chatStates[chatId].summaryStore 结构。 */
+export function loadChatState(chatId) {
   try {
-    const ctx = getSTContext();
-    const ext = ctx?.extensionSettings?.[EXTENSION_ID];
-    const chatStates = ext?.chatStates;
-    if (chatStates && chatStates[chatId] && chatStates[chatId].summaryStore) {
-      return SummaryStore.fromDict(chatStates[chatId].summaryStore);
+    const root = extRoot();
+    const raw = root?.chatStates?.[chatId];
+    if (raw && typeof raw === "object") {
+      if (typeof raw.tracking === "string" && raw.tracking.includes("状态追踪")) {
+        return { tracking: raw.tracking, turn: Number(raw.turn) || extractTurnFromText(raw.tracking) };
+      }
+      const legacyEntries = raw.summaryStore?.entries ?? raw.summaryStore?._entries;
+      if (Array.isArray(legacyEntries)) {
+        for (let i = legacyEntries.length - 1; i >= 0; i--) {
+          const entry = legacyEntries[i];
+          if (typeof entry === "string" && entry.includes("状态追踪")) {
+            return { tracking: entry.trim(), turn: extractTurnFromText(entry) };
+          }
+        }
+      }
     }
-    if (ext?.summaryStore) {
-      console.log("[NarrativeAgent] Migrating legacy global summary to chat:", chatId);
-      return SummaryStore.fromDict(ext.summaryStore);
-    }
-  } catch { /* ignore */ }
-  return new SummaryStore();
+  } catch {
+    /* ignore */
+  }
+  return { tracking: "", turn: 0 };
 }
 
-export function persistState(orchestrator, config, currentChatId) {
+export function saveChatState(chatId, state) {
   try {
-    const ctx = getSTContext();
-    if (!ctx || !orchestrator) return;
-    const chatId = currentChatId || getConversationId();
-    ctx.extensionSettings[EXTENSION_ID] = ctx.extensionSettings[EXTENSION_ID] || {};
-    ctx.extensionSettings[EXTENSION_ID].enabled = config.enabled;
+    const root = extRoot();
+    if (!root) return;
+    if (!root.chatStates) root.chatStates = {};
+    root.chatStates[chatId] = {
+      tracking: typeof state?.tracking === "string" ? state.tracking : "",
+      turn: Number(state?.turn) || 0,
+    };
+    root.enabled = root.config?.enabled === true;
+    flush();
+  } catch {
+    /* ignore */
+  }
+}
 
-    if (config.enabled) {
-      ctx.extensionSettings[EXTENSION_ID].chatStates = ctx.extensionSettings[EXTENSION_ID].chatStates || {};
-      ctx.extensionSettings[EXTENSION_ID].chatStates[chatId] = {
-        gameState: orchestrator.stateManager.toDict(),
-        summaryStore: orchestrator.summaryStore.toDict(),
-      };
+export function deleteChatState(chatId) {
+  try {
+    const root = extRoot();
+    if (root?.chatStates && root.chatStates[chatId]) {
+      delete root.chatStates[chatId];
+      flush();
     }
+  } catch {
+    /* ignore */
+  }
+}
 
-    if (ctx.extensionSettings[EXTENSION_ID].summaryStore) {
-      delete ctx.extensionSettings[EXTENSION_ID].summaryStore;
+/** 清掉旧版遗留的全局键（gameState / summaryStore），只做一次。 */
+export function purgeLegacyGlobals() {
+  try {
+    const root = extRoot();
+    if (!root) return;
+    let changed = false;
+    for (const key of ["gameState", "summaryStore"]) {
+      if (key in root) {
+        delete root[key];
+        changed = true;
+      }
     }
-    if (ctx.extensionSettings[EXTENSION_ID].gameState) {
-      delete ctx.extensionSettings[EXTENSION_ID].gameState;
-    }
-
-    if (typeof ctx.saveSettingsDebounced === "function") ctx.saveSettingsDebounced();
-  } catch { /* ignore */ }
+    if (changed) flush();
+  } catch {
+    /* ignore */
+  }
 }

@@ -1,14 +1,13 @@
 {
-    "display_name": "Narrative Agent",
+    "display_name": "Narrative Agent (Slim)",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.3.25",
-    "description": "多Agent叙事系统v0.3.25：重要记忆点一条一事件/禁斜杠打包/滤性爱流水账 + 代码层斜杠拆分与分隔符截断",
+    "version": "0.4.0-slim",
+    "description": "单次调用叙事引擎：一次 API 完成叙事与状态追踪；思考块与状态块在写回前剥离，消息里只显示正文",
     "author": "Lol1p0p",
     "tags": [
-        "agent",
         "narrative",
-        "pipeline"
+        "single-call"
     ],
     "js": "index.js",
     "css": "style.css"
