@@ -1,5 +1,11 @@
 # 更新日志
 
+## v0.4.2-slim — 死代码清理
+
+- 删除 `utils.js` 中旧多 Agent 架构遗留、仓库内已无人引用的函数：`extractPresetContext`、`stripStatePanel`、`stripMvuTags`、`parseTextToVariables`、`withTimeout`、`isApiFailure`、`_stripFormattingContent`，以及随之孤立的 `_isEntryExcluded`、`_buildPromptEnabledMap`（共 9 个）。
+- `utils.js` 只保留 6 个仍在使用的函数，并在文件头标注各自调用方，避免以后再被误删。
+- **无功能变更**：预设提取由 `preset.js` 负责，输出清洗由 `parse.js` 负责，本版不再自行发起 API 调用（所以 `withTimeout` / `isApiFailure` 这类为「自己发请求」服务的工具已彻底无用）。
+
 ## v0.4.1-slim — 断联修复 · 职责收敛 · 预设分工
 
 本版只做三件事：**修掉会导致 API 断联的代码路径**、**把写作规则交还预设**、**把卡的写作规范补回 prompt**。
@@ -90,7 +96,7 @@ if (!(abortController && signal)) {
 
 ### 已知取舍（非缺陷）
 
-- 状态块要求「无变化也逐项写出、照抄上一轮」，这是为了消息里始终有完整状态，代价是每轮多输出几百 token。如需进一步提速，可改为「只输出变化项 + 其余写 =上轮」。
+- **状态块「无变化也逐项写出、照抄上一轮」是刻意设计，不是待优化项。** 它保证每轮消息末尾都携带完整状态，模型下一轮直接读到即可维持记忆连续性；每轮多出的几百 token 是换取记忆稳定性的必要成本。（曾评估「只输出变化项 + 其余写 =上轮」，已否决。）
 - 无超时、无重试仍然是设计选择：任何失败都不叠加请求，避免把同一个 key 打到限流。
 - 若某轮模型只返回思考内容，消息会写入一条明确提示（原始返回打印在控制台便于排查）。
 

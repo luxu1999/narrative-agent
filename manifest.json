@@ -2,7 +2,7 @@
     "display_name": "Narrative Agent (Slim)",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.4.1-slim",
+    "version": "0.4.2-slim",
     "description": "单次调用叙事引擎，只负责状态追踪；写作规则（文风/人称/篇幅/句式）沿用 ST 预设；含 prompt 预算裁剪与拦截幂等保护",
     "author": "Lol1p0p",
     "tags": [
