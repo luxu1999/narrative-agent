@@ -15,6 +15,7 @@ import {
 } from "./settings.js";
 import { getSTContext, getConversationId, truncate } from "./utils.js";
 import { selectHistory } from "./prompt.js";
+import { extractPresetRules } from "./preset.js";
 
 let config = null;
 let engine = null;
@@ -42,8 +43,19 @@ function extractTurns(chat) {
   return turns;
 }
 
+// 轮次缓存：chatTurns() 一轮里会被调用 3 次（nextTurn / history / 关键词匹配），
+// 每次都全量扫描整个聊天会明显拖慢发送。用「数组引用 + 长度 + 末条长度」做失效判断。
+let turnsCache = { ref: null, len: -1, tailLen: -1, turns: [] };
+
 function chatTurns() {
-  return extractTurns(getSTContext()?.chat || []);
+  const chat = getSTContext()?.chat || [];
+  const tail = chat.length > 0 ? String(chat[chat.length - 1]?.mes ?? chat[chat.length - 1]?.content ?? "").length : 0;
+  if (turnsCache.ref === chat && turnsCache.len === chat.length && turnsCache.tailLen === tail) {
+    return turnsCache.turns;
+  }
+  const turns = extractTurns(chat);
+  turnsCache = { ref: chat, len: chat.length, tailLen: tail, turns };
+  return turns;
 }
 
 function completedTurns() {
@@ -79,12 +91,22 @@ function createEngine(chatId) {
       return selectHistory(chatTurns(), config.historyWindow, config.historyGrowth);
     },
 
+    /** 预设里的写作规则（文风 / 人称 / 抢话 / 推进 / 用词 / 字数）。 */
+    presetRules() {
+      if (config.injectPresetRules === false) return "";
+      return extractPresetRules(getSTContext());
+    },
+
     characterInfo() {
       const info = character.getCoreInfo();
       const parts = [];
       if (info?.name) parts.push(`【名称】${info.name}`);
-      if (info?.personality) parts.push(`【性格】\n${truncate(info.personality, 1500)}`);
       if (info?.description) parts.push(`【设定】\n${truncate(info.description, 4000)}`);
+      if (info?.personality) parts.push(`【性格】\n${truncate(info.personality, 1500)}`);
+      // 卡自带的对话示例与回复行为准则必须一起带上：
+      // 本插件是整段替换 prompt，不带就等于把卡里的写作规范全丢了。
+      if (info?.mesExample) parts.push(`【对话示例】\n${truncate(info.mesExample, 2000)}`);
+      if (info?.postHistoryInstructions) parts.push(`【回复行为准则】\n${truncate(info.postHistoryInstructions, 5000)}`);
       return parts.join("\n\n");
     },
 
@@ -101,9 +123,10 @@ function createEngine(chatId) {
       try {
         if (config.injectConstantEntries) parts.push(...world.constantEntries());
         if (config.injectKeywordEntries) {
-          const matchText = [summary.getTracking(), eng.history().map((t) => `${t.user}\n${t.assistant}`).join("\n"), userInput]
-            .filter(Boolean)
-            .join("\n");
+          // 匹配文本只取「最近 2 轮 + 用户输入」：把整段历史拼进去会退化成对几万字做
+          // 上千次 includes()，是发送卡顿的主要来源之一。
+          const recent = eng.history().slice(-2).map((t) => `${t.user}\n${t.assistant}`).join("\n");
+          const matchText = [recent, userInput].filter(Boolean).join("\n");
           parts.push(...world.keywordEntries(matchText));
         }
       } catch (e) {
@@ -133,6 +156,7 @@ function createEngine(chatId) {
     afterTurn() {
       saveChatState(chatId, summary.toDict());
       world.refresh().catch(() => {});
+      character.prefetch().catch(() => {});
       refreshDisplay();
     },
 
@@ -167,6 +191,7 @@ function installLifecycleHandlers() {
     engine = createEngine(newChatId);
     bridge.engine = engine;
     engine.world.refresh().catch(() => {});
+    engine.character.prefetch().catch(() => {});
     console.log("[NarrativeAgent] 已切换到聊天:", newChatId);
     refreshDisplay();
   });
@@ -236,15 +261,15 @@ async function registerSettingsPane() {
 
   bindCheckbox("#na_enabled", () => config.enabled === true, (v) => {
     config.enabled = v;
-    if (bridge) bridge.enabled = v;
+    // 用 setEnabled：勾上时立即安装监听（否则要刷新页面才生效），取消时立即卸载
+    if (bridge) bridge.setEnabled(v);
   });
   bindNumber("#na_history_window", () => config.historyWindow, (v) => { config.historyWindow = Math.max(1, v); }, 1, 50);
   bindNumber("#na_history_growth", () => config.historyGrowth, (v) => { config.historyGrowth = v; }, 0, 50);
-  bindNumber("#na_min_reply_chars", () => config.minReplyChars, (v) => { config.minReplyChars = v; }, 0, 9999);
-  bindNumber("#na_max_reply_chars", () => config.maxReplyChars, (v) => { config.maxReplyChars = v; }, 0, 9999);
+  bindNumber("#na_max_prompt_chars", () => config.maxPromptChars, (v) => { config.maxPromptChars = Math.max(4000, v); }, 4000, 400000);
   bindCheckbox("#na_inject_constant", () => config.injectConstantEntries !== false, (v) => { config.injectConstantEntries = v; });
   bindCheckbox("#na_inject_keyword", () => config.injectKeywordEntries !== false, (v) => { config.injectKeywordEntries = v; });
-  bindCheckbox("#na_dialogue_driven", () => config.dialogueDriven !== false, (v) => { config.dialogueDriven = v; });
+  bindCheckbox("#na_inject_preset", () => config.injectPresetRules !== false, (v) => { config.injectPresetRules = v; });
   bindCheckbox("#na_strip_thinking", () => config.stripThinking !== false, (v) => { config.stripThinking = v; });
   bindCheckbox("#na_show_state", () => config.showStateInMessage !== false, (v) => { config.showStateInMessage = v; });
 
@@ -294,6 +319,8 @@ async function init() {
 
   // 预取世界书：prompt 必须在事件回调里同步拼好，所以条目要提前缓存
   await engine.world.refresh();
+  // 同理，把完整角色卡先拉进缓存（浅卡拿不到 description / post_history）
+  await engine.character.prefetch();
 
   if (config.enabled) {
     bridge.install();

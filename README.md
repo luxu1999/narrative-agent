@@ -2,6 +2,8 @@
 
 本版是对原「多 Agent 叙事系统」的重写：**一次用户发送 = 一次 API 调用**；思考过程不进消息；每段正文后面附上**完整的角色状态追踪**。
 
+> **v0.4.1 更新**：修复会导致 API 断联的代码路径、把写作规则交还预设、把角色卡的写作规范补回 prompt。详见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 行为
 
 ```
@@ -9,8 +11,9 @@
   │
   ├─ GENERATION_STARTED        记下本次生成类型
   ├─ CHAT_COMPLETION_PROMPT_READY
-  │     └─ 把这个请求的 prompt 整体替换成：写作指令 + 状态块规格 + 世界书 + 角色卡 + 用户 persona
-  │        + <previous_state> + <recent_turns> + <user_input>
+  │     └─ 把这个请求的 prompt 整体替换成：最小写作指令 + **预设写作规则** + 状态块规格
+  │        + 世界书 + 角色卡 + 用户 persona + <previous_state> + <recent_turns> + <user_input>
+  │        （替换后按 maxPromptChars 裁剪：关键词世界书 → 最老历史）
   │        （就这一次请求，插件自己不再发起任何 generateRaw）
   │
   └─ GENERATION_ENDED
@@ -20,6 +23,25 @@
         ├─ 消息 = 正文 + 空行 + 完整状态追踪（可在设置里只存不显示）
         └─ 同一份状态 → summaryStore + localStorage 快照（供下一轮注入与删消息回滚）
 ```
+
+## 与预设的分工
+
+本插件**只负责状态追踪**。文风 / 人称 / 抢话 / 剧情推进 / 用词（句式黑名单）/ 篇幅字数一律由 SillyTavern 预设提供。
+
+`preset.js` 会在每次生成前遍历预设里**启用**的条目，逐条 `substituteParams`（这样 `{{setglobalvar}}` 先执行、`{{getglobalvar}}` 才有值），把写作规则抽出来放进 `<preset_rules>`；同时丢弃输出协议类条目（DREAM_PLOT / schema / MVU / 八股超杀 / 梦境选项 / DX 包裹 / 世界书压缩宏），避免与「正文 + 状态块」格式打架。
+
+「写作模式」这类人话与协议混排的条目，只取其中的 `<writing_setting>…</writing_setting>` 块。
+
+因此：**想改文风/字数，改预设；想改状态字段，改本扩展。**
+
+## 断联是怎么修掉的（都已在代码层处理）
+
+1. **替换 prompt 后不再有 ST 的 token 预算**：新增 `maxPromptChars`（默认 40000 字符），超出按「关键词世界书 → 最老历史 → user 段兜底」顺序裁剪。这是「超长请求被 API 拒绝」的直接对策。
+2. **收尾阶段不再手动 emit 事件**：`MESSAGE_UPDATED` / `CHARACTER_MESSAGE_RENDERED` 被手动 emit 会让其它扩展（如 expressions）在收尾时再发一次请求；而 ST 的 `Generate()` 每次都会覆盖全局 `abortController`（`script.js:4243`），把主请求顶掉就是断联。
+3. **拦截层幂等 + 不碰 dry run**：重复 `install()` 会导致同一请求被改写两次；`dryRun` 的 prompt 也不再改写。
+4. **同一次生成只改写一次**：`_plan` 已存在时跳过重复改写。
+5. **其它扩展的 quiet 生成不再干扰收尾**：用 `_quietActive` 计数区分，避免被别人的 `GENERATION_ENDED` 提前触发收尾。
+6. 删掉了永远不生效的死配置（原 `responseTokens`：ST 的该事件载荷只有 `{ chat, dryRun }`，没有 `max_tokens`）。
 
 ## 状态追踪的完整性怎么保证
 
@@ -46,6 +68,7 @@
 
 新增：
 
+- `preset.js` — 从 ST 预设里提取写作规则（文风 / 人称 / 抢话 / 推进 / 用词 / 字数），并过滤输出协议类条目
 - `prompt.js` — 组装这一次调用的 messages（含 n+m 历史窗口）
 - `parse.js` — 剥离思考块、切出状态块、把状态块补成完整 10 项
 - `summary.js` — `SummaryStore`（每聊天一条状态）+ `CheckpointStore`（localStorage 快照）
@@ -76,12 +99,12 @@
 
 | 设置 | 默认 | 说明 |
 | --- | --- | --- |
-| 启用叙事引擎 | 开 | 关闭后完全不拦截，回退到 ST 原生生成 |
+| 启用叙事引擎 | 开 | 关闭后卸载拦截层并回退到 ST 原生生成（无需刷新页面） |
 | 最小轮数 n / 生长缓冲 m | 3 / 3 | 历史窗口在 n ~ n+m 之间生长，稳定前缀以提高缓存命中 |
-| 最小/最大字数 | 800 / 1200 | 只约束正文，状态块不计入；0 = 不设该端限制 |
+| 注入预设的写作规则 | 开 | 把预设里启用的写作规则带进 prompt；关闭则只按插件内置最小规则写作 |
+| Prompt 字符上限 | 40000 | 超出按「世界书 → 最老历史」自动裁剪，防超长请求被 API 拒绝 |
 | 世界书来源 / 注入常驻 / 注入关键词 | auto / 开 / 开 | 格式化条目（`[TOOL:*]` 等）一律不注入 |
 | 剥离思考块 | 开 | 关闭则原样保留模型的思考标签 |
-| 对话驱动推进剧情 | 开 | 以角色间对话为主体推进 |
 | 在消息末尾展示完整状态追踪 | 开 | 关闭后状态只在后台存档，不出现在消息里 |
 
 ## 需要知道的取舍

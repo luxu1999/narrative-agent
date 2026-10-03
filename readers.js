@@ -69,7 +69,7 @@ export class CharacterReader {
 
   getCoreInfo() {
     const card = this._getCard();
-    if (!card) return { name: "\u89d2\u8272", personality: "", description: "", systemPrompt: "", postHistoryInstructions: "" };
+    if (!card) return { name: "\u89d2\u8272", personality: "", description: "", systemPrompt: "", postHistoryInstructions: "", mesExample: "" };
     const data = card.data || {};
     const get = (field) => data[field] || card[field] || "";
     return {
@@ -78,7 +78,26 @@ export class CharacterReader {
       description: get("description"),
       systemPrompt: get("system_prompt"),
       postHistoryInstructions: get("post_history_instructions"),
+      mesExample: get("mes_example"),
     };
+  }
+
+  /**
+   * 预热：ST 对非激活角色只保留浅卡（没有 data 字段），
+   * 而 prompt 必须在事件回调里同步拼好，不能 await。
+   * 所以在初始化 / 每轮结束后异步把完整卡拉进缓存，供同步路径使用。
+   */
+  async prefetch() {
+    try {
+      const ctx = getSTContext();
+      const full = await this._getFullCard();
+      if (full && ctx) {
+        this._cache = full;
+        this._cacheId = ctx.characterId;
+      }
+    } catch {
+      /* 拿不到就继续用浅卡，不影响生成 */
+    }
   }
 
   async getFullInfo() {

@@ -12,13 +12,11 @@ export const DEFAULT_CONFIG = {
   worldbookSource: "auto", // auto | card | world
   injectConstantEntries: true,
   injectKeywordEntries: true,
+  injectPresetRules: true, // 把预设里的写作规则（文风/人称/抢话/推进/字数）带进 prompt
+  maxPromptChars: 40000, // 整个 prompt 的字符上限，超出按「世界书 → 最老历史」顺序裁剪，防超长请求被 API 拒
   historyWindow: 3, // n：最小历史轮数
   historyGrowth: 3, // m：生长缓冲（窗口在 n ~ n+m 之间）
-  minReplyChars: 800,
-  maxReplyChars: 1200,
-  responseTokens: 16000,
   stripThinking: true,
-  dialogueDriven: true,
   showStateInMessage: true, // 在消息末尾展示完整状态追踪
 };
 
@@ -41,14 +39,11 @@ export const STATE_FIELDS = [
   "重要记忆点",
 ];
 
-/** 主写作规则（system 第一部分）。 */
-export function buildBaseRules(config) {
-  const min = Math.max(0, Number(config?.minReplyChars) || 0);
-  const max = Math.max(0, Number(config?.maxReplyChars) || 0);
-  const lengthRule = max > 0
-    ? `正文长度控制在 ${min > 0 ? `${min}–${max}` : `不超过 ${max}`} 字（不含状态块）。`
-    : "正文长度以完整写完本轮情节为准，不要草草收尾。";
-
+/**
+ * 主写作规则（system 第一部分）。
+ * 只管「格式与一致性」，不作文风/字数/句式规定——那些交给预设（见 preset.js）。
+ */
+export function buildBaseRules() {
   return `你是中文互动叙事的写作引擎。用户扮演故事主角，你以其余角色与旁白推进剧情。
 
 【最高优先级】
@@ -56,21 +51,14 @@ export function buildBaseRules(config) {
 2. 禁止在正文里使用 <state>、<context>、<summary>、<analysis> 等标签。
 3. <previous_state> 是已经发生的事实：必须与它保持一致，但严禁在正文中复述、列举或改写它。
 4. 承接上一轮继续写：不重复已写内容，不提前收束结局，不替用户角色做重大决定。
-5. 剧情以角色对话与行动推进；对话必须标注说话人。
+5. 对话必须标注说话人。
 6. 角色的态度必须与 <previous_state> 中记录的当前态度连贯，禁止无故反复横跳；态度转变要有本轮事件驱动。
-7. 禁止「没有…没有…」「不是…不是…」这类否定排比句式。
-8. ${lengthRule}`;
+7. 若上方给出了 <preset_rules>，它是本轮的写作规范（文风、句式、人称、推进节奏、字数等），必须严格遵守。`;
 }
-
-/** 对话驱动规则（可选）。 */
-export const DIALOGUE_RULE = `【剧情推进方式】
-- 以角色之间的多轮对话为主体推进情节：对话展开信息、激化或缓和冲突，叙述只作辅助。
-- 多个角色在场时要互相交谈、回应、插话，形成对话场，而不是各自单向陈述。
-- 可以代写用户角色的简短台词来维持对话节奏，但不得篡改用户已写内容、不得替用户角色做重大决定。`;
 
 /** 状态块规格（system 最后一部分）。 */
 export const STATE_SPEC = `【状态块规格】
-状态块是系统记忆世界的唯一载体，不会展示给用户。字段顺序固定，每行一个字段，字段值内不得换行：
+状态块是系统记忆世界的唯一载体，字段顺序固定，每行一个字段，字段值内不得换行：
 
 [第N轮]状态追踪：
 时间：剧情内时间，精确到分钟（如：第3天 14:05）
