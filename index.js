@@ -22,6 +22,14 @@ let engine = null;
 let bridge = null;
 let settingsHtml = null;
 
+// 历史里的状态块是上一轮的存档；本轮会用 <previous_state> 重新注入一份最新的，
+// 所以历史消息尾部的状态块属于重复内容，拼 prompt 时直接剥掉（略省 token）。
+const STATE_BLOCK_TAIL = /\n*\[\s*第\s*\d+\s*轮\s*\]\s*状态追踪\s*[：:][\s\S]*$/;
+
+function stripStateBlock(text) {
+  return String(text || "").replace(STATE_BLOCK_TAIL, "").trim();
+}
+
 /** 从 ctx.chat 提取轮次（用户一条 + 其后的 AI 正文算一轮）。 */
 function extractTurns(chat) {
   const turns = [];
@@ -34,7 +42,9 @@ function extractTurns(chat) {
       current = { user: text, assistant: "" };
       turns.push(current);
     } else if (current) {
-      current.assistant = current.assistant ? `${current.assistant}\n${text}` : text;
+      const body = stripStateBlock(text);
+      if (!body) continue;
+      current.assistant = current.assistant ? `${current.assistant}\n${body}` : body;
     }
   }
   turns.forEach((t, i) => {
