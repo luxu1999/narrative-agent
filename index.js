@@ -17,6 +17,7 @@ import { getSTContext, getConversationId, truncate, setChatVariable } from "./ut
 import { selectHistory } from "./prompt.js";
 import { extractPresetRules } from "./preset.js";
 import { STATE_VARIABLE_KEY } from "./constants.js";
+import { applyInjection, injectionMode } from "./inject.js";
 
 let config = null;
 let engine = null;
@@ -164,6 +165,12 @@ function createEngine(chatId) {
       saveChatState(chatId, summary.toDict());
       // 状态后端版的核心出口：写进聊天变量，由预设条目 {{getvar::na_state}} 在下一轮自行注入
       setChatVariable(STATE_VARIABLE_KEY, stateText);
+      // 同时刷新扩展自己的注入（预设没配条目时靠这条进 prompt）
+      try {
+        applyInjection(eng, eng.config, eng.nextTurn());
+      } catch {
+        /* ignore */
+      }
     },
 
     afterTurn() {
@@ -207,6 +214,11 @@ function installLifecycleHandlers() {
     engine.character.prefetch().catch(() => {});
     console.log("[NarrativeAgent] 已切换到聊天:", newChatId);
     syncStateVariable();
+    try {
+      applyInjection(engine, config, engine.nextTurn());
+    } catch {
+      /* ignore */
+    }
     refreshDisplay();
   });
 
@@ -232,10 +244,11 @@ function refreshDisplay() {
   const turn = engine.summary.getTurn();
   const world = engine.world.status;
   const lines = [
-    "✅ 状态后端版 v0.5.0（只读 · 不改写 prompt / 不改写消息）",
+    "✅ 状态后端版 v0.6.0（只读 · 不改写 prompt / 不改写消息）",
     `轮次：已完成 ${completedTurns()} 轮｜状态记录：第 ${turn} 轮`,
+    `注入：${injectionMode(config)}`,
     `世界书：${world.loaded ? `${world.count} 条${world.error ? `（上次读取失败：${world.error}）` : ""}` : "未加载"}`,
-    `状态变量 na_state：${tracking ? "已写入（供预设 {{getvar::na_state}} 读取）" : "空"}`,
+    `状态变量 na_state：${tracking ? "已写入" : "空"}`,
     "",
     tracking ? truncate(tracking, 1200) : "（暂无状态追踪）",
   ];
@@ -298,6 +311,19 @@ async function registerSettingsPane() {
   bindCheckbox("#na_strip_thinking", () => config.stripThinking !== false, (v) => { config.stripThinking = v; });
   bindCheckbox("#na_show_state", () => config.showStateInMessage !== false, (v) => { config.showStateInMessage = v; });
 
+  // 自动注入相关：改完立刻生效（无需刷新页面）
+  const reInject = () => {
+    if (!engine) return;
+    try {
+      applyInjection(engine, config, engine.nextTurn());
+    } catch {
+      /* ignore */
+    }
+  };
+  bindCheckbox("#na_auto_spec", () => config.autoInjectSpec !== false, (v) => { config.autoInjectSpec = v; reInject(); });
+  bindCheckbox("#na_auto_prev", () => config.autoInjectPrev !== false, (v) => { config.autoInjectPrev = v; reInject(); });
+  bindNumber("#na_prev_depth", () => config.prevInjectDepth ?? 1, (v) => { config.prevInjectDepth = Math.max(1, v); reInject(); }, 1, 100);
+
   $html.find("#na_worldbook_source").val(config.worldbookSource || "auto");
   $html.find("#na_worldbook_source").on("change", function () {
     config.worldbookSource = $(this).val();
@@ -342,6 +368,11 @@ async function init() {
   bridge = new NarrativeBridge(engine);
   bridge.enabled = config.enabled === true;
   syncStateVariable();
+  try {
+    applyInjection(engine, config, engine.nextTurn());
+  } catch {
+    /* ignore */
+  }
 
   // 预取世界书：prompt 必须在事件回调里同步拼好，所以条目要提前缓存
   await engine.world.refresh();

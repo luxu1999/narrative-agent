@@ -2,8 +2,8 @@
     "display_name": "Narrative Agent · 状态后端版",
     "id": "narrative-agent",
     "api": 2,
-    "version": "0.5.0-readonly",
-    "description": "只读状态后端：不改写 prompt、不改写消息。prompt 与输出形态归 ST 与预设所有（破甲栈不受影响）；本插件只把每轮状态追踪解析、补齐并写入聊天变量 na_state，供预设 {{getvar::na_state}} 注入。",
+    "version": "0.6.0-autoinject",
+    "description": "只读状态后端 + 自动注入：不改写 prompt、不改写消息、不改预设。每轮解析并补齐状态追踪，写入聊天变量 na_state；预设没自带条目时，扩展自己用 setExtensionPrompt 注入状态规格与上一轮状态，装上即可用于任意预设。",
     "author": "Lol1p0p",
     "tags": [
         "narrative",

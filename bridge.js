@@ -16,6 +16,7 @@
 
 import { getSTContext } from "./utils.js";
 import { parseModelOutput, formatStateBlock } from "./parse.js";
+import { applyInjection, clearInjection } from "./inject.js";
 
 const GEN_NORMAL = "normal";
 const GEN_CONTINUE = "continue";
@@ -55,7 +56,7 @@ export class NarrativeBridge {
     ctx.eventSource.on(t.CHAT_COMPLETION_PROMPT_READY, this._boundPromptReady);
     ctx.eventSource.on(t.GENERATION_ENDED, this._boundEnded);
     this._installed = true;
-    console.log("[NarrativeAgent] 拦截层已安装（单次调用模式）");
+    console.log("[NarrativeAgent] 拦截层已安装（只读状态后端）");
     return true;
   }
 
@@ -69,6 +70,12 @@ export class NarrativeBridge {
     this._installed = false;
     this._plan = null;
     this._quietActive = 0;
+    // 关闭时把注入一并撤掉，避免残留内容继续进入 prompt
+    try {
+      clearInjection();
+    } catch {
+      /* ignore */
+    }
     console.log("[NarrativeAgent] 拦截层已卸载");
   }
 
@@ -85,9 +92,23 @@ export class NarrativeBridge {
     if (USER_GENERATION_TYPES.has(t)) {
       // 新一轮用户生成：上一轮若因异常没走到收尾，这里丢掉残留计划，避免串轮
       this._plan = null;
+      // 自动注入必须赶在 prompt 组装之前：GENERATION_STARTED 早于组装，
+      // 而 CHAT_COMPLETION_PROMPT_READY 时 prompt 已经拼好了，再设就晚了。
+      // 这里顺带把轮次号刷新成本轮。
+      try {
+        applyInjection(this.engine, this.engine?.config, this.engine?.nextTurn?.() || 1);
+      } catch (e) {
+        console.warn("[NarrativeAgent] 自动注入失败:", e?.message);
+      }
     } else {
       // 其它扩展发起的生成：标记一下，结束时不要误当成我们的收尾
       this._quietActive++;
+      // 别人的 prompt 不注入我们的内容，避免造成干扰
+      try {
+        clearInjection();
+      } catch {
+        /* ignore */
+      }
     }
   }
 

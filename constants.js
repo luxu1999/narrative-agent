@@ -26,6 +26,11 @@ export const DEFAULT_CONFIG = {
   stripThinking: true,
   // 状态后端版不再改写消息，此项已不生效（保留字段以免旧配置报错）
   showStateInMessage: true,
+
+  // ---- 自动注入（v0.6.0）：不改预设也能用 ----
+  autoInjectSpec: true,   // 预设没自带状态规格条目时，由扩展自己注入
+  autoInjectPrev: true,   // 预设没自带 na_state 注入时，由扩展自己注入上一轮状态
+  prevInjectDepth: 1,     // 上一轮状态插在「倒数第 N 条之前」；1 = 保住最后一条的末位锚点
 };
 
 export const EMPTY_OUTPUT_NOTICE =
@@ -117,4 +122,35 @@ export function buildOutputFormat(turn) {
 - 禁止写「不变」「同上」「略」这类占位词；禁止只写有变化的那几项。
 - 状态块里不要写正文、解释或额外备注（「当前态度」括号内的说明除外）。
 - 正文与状态块之外不要再输出任何内容（不要写「以下是正文」「状态如下」之类）。`;
+}
+
+/**
+ * 自动注入用的状态规格文本（等价于预设里手工加的「📊状态追踪·规格」条目）。
+ *
+ * 只在「预设没有自带规格条目」时使用（判定见 inject.js）。
+ * 末尾给出本轮的 10 项空模板，模型照抄填充即可，避免漏项。
+ *
+ * @param {number} turn 本轮轮次
+ * @returns {string}
+ */
+export function buildStateSpecText(turn) {
+  const t = Number(turn) > 0 ? Number(turn) : 1;
+  return `<state_tracking_spec>
+每回合必须输出状态追踪块：紧接正文之后，与正文之间空一行。不要为它添加任何额外的包裹标签、前缀或说明文字。
+
+${STATE_SPEC}
+
+本轮字段模板（第${t}轮，10 项一项都不能少，照此逐行填写）：
+[第${t}轮]状态追踪：
+时间：
+区域：
+在场角色+BUFF：
+不在场角色：
+处女膜状态：
+做爱次数：
+角色好感度：
+当前态度：
+身体外貌：
+重要记忆点：
+</state_tracking_spec>`;
 }

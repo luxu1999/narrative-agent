@@ -1,5 +1,63 @@
 # 更新日志
 
+## v0.6.0-autoinject — 自动注入（不改预设即可用）
+
+v0.5.0 把插件改成了只读状态后端，但它依赖**预设里手写两条条目**（状态规格 + `{{getvar::na_state}}` 注入）。有多个预设时要逐个手改，做不到「装上即可使用」。
+
+本版新增自动注入层，把这件事交还给插件自己。
+
+### 新增 `inject.js`
+
+用 ST 的 `setExtensionPrompt()`（`getContext()` 已暴露）往 prompt 里塞两段内容，**不碰 chat 数组、不碰消息文本**：
+
+| 内容 | 位置 | 理由 |
+|---|---|---|
+| 状态规格 | `IN_PROMPT(0)`，depth 0 | 落在 prompt 收集的末尾（system 区、chat 之前），不碰 chat 尾部 |
+| 上一轮状态 | `IN_CHAT(1)`，depth 1 | 落在最后一条消息**之前**，保住预设的末位锚点（如光标标记） |
+
+> 刻意不用 `BEFORE_PROMPT`：那会插到 prompt 最开头，顶掉预设的第一条 system，而许多破甲栈依赖「首条 system 的任务框架」。
+
+ST 的 `extension_prompt_types` / `extension_prompt_roles` 枚举没有暴露在 `getContext()` 上，代码里按 `script.js` 的数值固定（`IN_PROMPT=0`、`IN_CHAT=1`、`SYSTEM=0`）。
+
+### 双通道检测（关键）
+
+`inject.js` 会扫 `ctx.chatCompletionSettings.prompts`，判定预设是否已经自带对应条目：
+
+- 内容含 `<state_tracking_spec>` → 预设已自带规格 → **跳过**规格注入
+- 内容含 `getvar::na_state` → 预设已自带注入 → **跳过**上一轮状态注入
+
+于是两类预设都能正常工作：**手工适配过的**不重复注入，**没配过的**自动生效。
+（标记用完整宏写法而不是裸变量名 `na_state`：避免预设只是注释里提过就被误判，导致我们跳过注入、状态静默进不了 prompt。）
+
+### 时机
+
+`setExtensionPrompt` 必须在 **prompt 组装之前**写入，所以放在 `GENERATION_STARTED`：
+
+```
+GENERATION_STARTED   → 刷新注入（轮次号 + 上一轮状态）   ← 这里
+  …组装 prompt…
+CHAT_COMPLETION_PROMPT_READY → 已经太晚，写入对本轮无效
+GENERATION_ENDED     → 解析 / 补齐 / 存档 / 写 na_state，并再刷新一次注入
+```
+
+### 不干扰其它扩展
+
+其它扩展发起的 quiet 生成会在 `GENERATION_STARTED` 触发时**撤掉**本插件注入，避免污染它们的 prompt；用户下一次生成前再重新写回。扩展被关闭时（`uninstall`）也会撤掉注入。
+
+### 新增设置项
+
+| 设置 | 默认 | 说明 |
+|---|---|---|
+| 由扩展注入状态规格 | 开 | 预设没自带时才注入 |
+| 由扩展注入上一轮状态 | 开 | 预设没自带时才注入 |
+| 上一轮状态注入深度 | 1 | 倒数第 N 条之前；1 = 保住末位锚点 |
+
+设置面板的「当前状态」会显示当前注入模式（全自动 / 全预设 / 混合）。
+
+### 未改动
+
+状态块字段（仍是固定 10 项）、`parse.js` 三道兜底、`settings.js` 每聊天持久化、`summary.js` 快照回滚、以及「不改写 prompt / 不改写消息」的只读原则。
+
 ## v0.5.0-readonly — 状态后端版（不改写 prompt / 消息）
 
 本版把插件从「接管者」降级为「**只读状态后端**」。**这是为了与预设的破甲栈共存。**

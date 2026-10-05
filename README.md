@@ -1,20 +1,32 @@
-# Narrative Agent — 状态后端版（只读）
+# Narrative Agent — 状态后端版（只读 + 自动注入）
 
-本版把插件从「接管者」降级为**只读状态后端**：**不改写 prompt、不改写消息**，只负责把每轮的状态追踪解析、补齐、存档，并写入聊天变量 `na_state`，由预设条目 `{{getvar::na_state}}` 在下一轮注入。
+**装上即可用**：不改写 prompt、不改写消息、**也不需要改预设**。
 
-这样预设自己的生成管线才能完整保留——包括寄生在「prompt 组装」与「正则清洗」两条管线上的**破甲栈**。
+本插件只做一件事——把每轮的状态追踪解析、补齐、存档，并让它进入下一轮的 prompt。生成与输出形态完全归 ST 与预设所有，包括寄生在「prompt 组装」与「正则清洗」两条管线上的**破甲栈**。
 
-> **v0.5.0 更新**：删除 prompt 整段替换与 `msg.mes` 重建；状态改走聊天变量 `na_state`；解析前自动剥破甲外壳。详见 [CHANGELOG.md](./CHANGELOG.md)。
+> **v0.6.0 更新**：新增自动注入层，不再依赖预设条目。详见 [CHANGELOG.md](./CHANGELOG.md)。
 
-## 预设侧需要配合的一条条目
+## 它是怎么不改预设也能跑的
+
+用 ST 的 `setExtensionPrompt()` 往 prompt 里塞两段内容，**不碰 chat 数组、不碰消息文本**：
+
+| 内容 | 位置 | 理由 |
+|---|---|---|
+| 状态规格 | `IN_PROMPT`（system 区，chat 之前） | 不碰 chat 尾部 |
+| 上一轮状态 | `IN_CHAT` 倒数第 1 条之前 | 保住预设最后一条的**末位锚点** |
+
+刻意不用 `BEFORE_PROMPT`——那会顶掉预设的第一条 system，而很多破甲栈依赖「首条 system 的任务框架」。
+
+## 预设侧（可选，不再是必需）
+
+如果某个预设你想手工接管，加这两条即可，扩展会自动让位：
 
 ```
-<previous_state>
-{{getvar::na_state}}
-</previous_state>
+<state_tracking_spec> … </state_tracking_spec>      ← 声明状态规格
+<previous_state>{{getvar::na_state}}</previous_state>  ← 读上一轮存档
 ```
 
-位置要求：**靠后，且必须在光标锚点 `<｜cursor｜>` 之前**（否则会顶掉 prompt 末位，破坏补全框架）。
+判定规则：预设内容里出现上面两个标记，扩展就跳过对应的自动注入，避免重复。
 
 ## 行为（v0.4.x 历史说明，本版已不再适用）
 

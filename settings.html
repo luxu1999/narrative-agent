@@ -1,7 +1,7 @@
 <div id="narrative_agent_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Narrative Agent（状态后端版 v0.5.0 · 只读）</b>
+            <b>Narrative Agent（状态后端版 v0.6.0 · 只读 + 自动注入）</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
@@ -76,6 +76,25 @@
                 <span>在消息末尾展示完整状态追踪（本版不再生效）</span>
             </label>
             <small>开启后，每段正文后面会附上 10 项完整状态追踪（时间 / 区域 / 在场角色+BUFF / 不在场角色 / 处女膜状态 / 做爱次数 / 角色好感度 / 当前态度 / 身体外貌 / 重要记忆点），缺项会自动用上一轮补齐。关闭则只在后台存档、不在消息里显示。</small>
+
+            <hr>
+
+            <h4>自动注入（不改预设即可用）</h4>
+            <label class="checkbox_label">
+                <input type="checkbox" id="na_auto_spec" name="na_auto_spec">
+                <span>由扩展注入「状态规格」（预设没自带时才注入）</span>
+            </label>
+            <label class="checkbox_label">
+                <input type="checkbox" id="na_auto_prev" name="na_auto_prev">
+                <span>由扩展注入「上一轮状态」（预设没自带时才注入）</span>
+            </label>
+            <div class="flex-container">
+                <label>上一轮状态注入深度:</label>
+                <input type="number" id="na_prev_depth" min="1" max="100" step="1" style="width: 80px;">
+            </div>
+            <small>两项都开着时，<b>任何预设装上即可使用</b>。注入只写 prompt，不改写预设、不改写消息；
+            规格走 IN_PROMPT（system 区），上一轮状态走 IN_CHAT 倒数第 N 条之前（默认 1，保住预设最后一条的末位锚点）。
+            若检测到预设里已手工加了对应条目，会自动跳过那一段，避免重复注入。</small>
 
             <hr>
 
