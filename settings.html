@@ -1,7 +1,7 @@
 <div id="narrative_agent_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Narrative Agent（精简版 · 单次调用）</b>
+            <b>Narrative Agent（状态后端版 v0.5.0 · 只读）</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
@@ -9,11 +9,14 @@
                 <input type="checkbox" id="na_enabled" name="na_enabled">
                 <span>启用叙事引擎</span>
             </label>
-            <small>启用后每次发送只调用一次 API：插件用自己的指令替换 prompt，返回内容剥离思考块与状态块后，只把<b>正文</b>写进消息。</small>
+            <small><b>本版是「只读状态后端」：不改写 prompt、不改写消息。</b>
+            prompt 由 ST 与预设原样组装（破甲栈、输出格式、正则清洗都归预设所有）；
+            本插件只在生成结束后读取消息里的状态块 → 补齐缺项 → 写入聊天变量 <code>na_state</code>，
+            再由预设条目 <code>{{getvar::na_state}}</code> 在下一轮注入给模型。</small>
 
             <hr>
 
-            <h4>历史窗口</h4>
+            <h4>历史窗口（本版不再生效）</h4>
             <div class="flex-container">
                 <label>最小轮数 (n):</label>
                 <input type="number" id="na_history_window" min="1" max="50" step="1" style="width: 80px;">
@@ -24,7 +27,7 @@
 
             <hr>
 
-            <h4>写作规则来源</h4>
+            <h4>写作规则来源（本版不再生效）</h4>
             <label class="checkbox_label">
                 <input type="checkbox" id="na_inject_preset" name="na_inject_preset">
                 <span>注入预设的写作规则（文风 / 人称 / 抢话 / 推进 / 用词 / 字数）</span>
@@ -33,7 +36,7 @@
 
             <hr>
 
-            <h4>Prompt 上限</h4>
+            <h4>Prompt 上限（本版不再生效）</h4>
             <div class="flex-container">
                 <label>字符上限:</label>
                 <input type="number" id="na_max_prompt_chars" min="4000" max="400000" step="2000" style="width: 120px;">
@@ -42,7 +45,7 @@
 
             <hr>
 
-            <h4>世界书</h4>
+            <h4>世界书（本版不再生效）</h4>
             <div class="flex-container">
                 <label>来源:</label>
                 <select id="na_worldbook_source" style="width: 220px;">
@@ -70,7 +73,7 @@
             </label>
             <label class="checkbox_label">
                 <input type="checkbox" id="na_show_state" name="na_show_state">
-                <span>在消息末尾展示完整状态追踪</span>
+                <span>在消息末尾展示完整状态追踪（本版不再生效）</span>
             </label>
             <small>开启后，每段正文后面会附上 10 项完整状态追踪（时间 / 区域 / 在场角色+BUFF / 不在场角色 / 处女膜状态 / 做爱次数 / 角色好感度 / 当前态度 / 身体外貌 / 重要记忆点），缺项会自动用上一轮补齐。关闭则只在后台存档、不在消息里显示。</small>
 

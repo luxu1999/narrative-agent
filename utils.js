@@ -70,3 +70,39 @@ export function _isToolEntryContent(content) {
     return false;
   }
 }
+
+/**
+ * 写入聊天级变量，供预设用 {{getvar::key}} 读取（状态后端版的核心通道）。
+ *
+ * 优先走 TavernHelper（本预设生态已在用），失败则退回 ST 原生 chatMetadata.variables。
+ * 本函数只写变量，不碰消息、不碰 prompt。
+ *
+ * @param {string} key
+ * @param {string} value
+ * @returns {boolean} 是否写入成功
+ */
+export function setChatVariable(key, value) {
+  const text = value == null ? "" : String(value);
+  try {
+    const th = typeof window !== "undefined" ? window.TavernHelper : null;
+    if (th && typeof th.setVariables === "function") {
+      th.setVariables({ [key]: text }, { type: "chat" });
+      return true;
+    }
+  } catch (e) {
+    console.warn("[NarrativeAgent] TavernHelper 写入变量失败，改用 ST 原生存储:", e?.message);
+  }
+  try {
+    const ctx = getSTContext();
+    if (!ctx || !ctx.chatMetadata) return false;
+    if (!ctx.chatMetadata.variables || typeof ctx.chatMetadata.variables !== "object") {
+      ctx.chatMetadata.variables = {};
+    }
+    ctx.chatMetadata.variables[key] = text;
+    if (typeof ctx.saveMetadata === "function") ctx.saveMetadata();
+    return true;
+  } catch (e) {
+    console.warn("[NarrativeAgent] 写入聊天变量失败:", e?.message);
+    return false;
+  }
+}

@@ -1,16 +1,21 @@
-// 拦截层：把 ST 这一次生成请求的 prompt 换成我们自己的 messages（全程只这一次 API 调用），
-// 生成结束后把返回值剥成「纯正文」写回消息，并把状态块交给 engine 存档。
+// 拦截层（状态后端版）：既不替换 prompt，也不改写消息。
 //
-// 与旧版的关键区别：
-// 1) 不再用中继占位符 + 自己 generateRaw，因此一轮只打一次 API，不会产生僵尸请求；
-// 2) 只接管用户主动发起的生成（normal/continue/regenerate/swipe/impersonate），
-//    其它扩展的 quiet 调用一律放行——旧版会连别人的请求一起改写，这就是「挡住 API」的来源；
-// 3) 无重试、无降级、无超时，失败就是失败，不叠加请求。
+// 职责收敛为两件事：
+//   1) 生成前：只记录本轮轮次；
+//   2) 生成后：只读地解析消息里的状态块 → 补齐缺项 → 存档 → 写成 ST 聊天变量，
+//      由预设条目用 {{getvar::na_state}} 在下一轮自行注入。
+//
+// 为什么不替换 prompt / 不改写消息：
+//   原预设（创世回廊）的破甲栈寄生在 ST 的两条管线上——prompt 组装管线（首条 system、
+//   末条 user 的光标锚点、assistant 预填位置）与正则清洗管线（渲染时剥离外壳、组装时净化历史）。
+//   一旦本插件整段替换 prompt 或重建 msg.mes，这两条管线就被绕过，破甲直接失效。
+//   因此这里采用「只读」：prompt 与消息文本一律归 ST 与预设所有。
+//
+// 只接管用户主动发起的生成（normal/continue/regenerate/swipe/impersonate），
+// 其它扩展的 quiet 调用一律放行；无重试、无降级、无超时。
 
-import { getSTContext, getLatestUserInput } from "./utils.js";
-import { buildMessages } from "./prompt.js";
+import { getSTContext } from "./utils.js";
 import { parseModelOutput, formatStateBlock } from "./parse.js";
-import { EMPTY_OUTPUT_NOTICE } from "./constants.js";
 
 const GEN_NORMAL = "normal";
 const GEN_CONTINUE = "continue";
@@ -114,30 +119,11 @@ export class NarrativeBridge {
     const isContinuation = CONTINUATION_TYPES.has(this._genType);
     if (!lastIsUser && !isContinuation) return;
 
-    const lastText = String(last?.mes ?? last?.content ?? "").trim();
-    const userInput = lastIsUser ? lastText : String(getLatestUserInput(ctx?.chat || chat) || "").trim();
+    // 只记轮次，不碰 prompt：
+    // prompt 由 ST + 预设原样组装，本插件只在生成结束后读消息、写变量。
     const turn = this.engine.nextTurn();
-
-    const worldEntries = this.engine.collectWorldEntries(userInput);
-    const { messages, systemChars, userChars, trimmed } = buildMessages({
-      config: this.engine.config,
-      turn,
-      worldEntries,
-      presetRules: this.engine.presetRules(),
-      characterInfo: this.engine.characterInfo(),
-      personaText: this.engine.personaText(),
-      prevState: this.engine.prevState(),
-      history: this.engine.history(),
-      userInput,
-    });
-
-    chat.splice(0, chat.length, ...messages);
-
-    this._plan = { turn, userInput };
-    console.log(
-      `[NarrativeAgent] 第${turn}轮：单次调用已就绪（system ${systemChars} 字符 / user ${userChars} 字符 / 世界书 ${worldEntries.length} 条）`
-        + (trimmed.length ? `｜已裁剪：${trimmed.join("，")}` : "")
-    );
+    this._plan = { turn };
+    console.log(`[NarrativeAgent] 第${turn}轮：只读模式已就绪（不改写 prompt、不改写消息）`);
   }
 
   async _onGenerationEnded() {
@@ -169,15 +155,15 @@ export class NarrativeBridge {
       return;
     }
 
+    // 保留原始文本，一个字都不写回去。
     const raw = String(msg.mes ?? msg.content ?? "");
-    const stripThinking = this.engine.config?.stripThinking !== false;
-    const { body, stateText, filled, hadThinking } = parseModelOutput(raw, plan.turn, stripThinking);
+    // 先剥掉「代码补全」类破甲外壳（只作用于解析副本），否则状态块会被 Python 外壳挡住。
+    const unwrapped = unwrapBypassShell(raw);
+    const doStrip = this.engine.config?.stripThinking !== false;
+    const { body, stateText, filled, hadThinking } = parseModelOutput(unwrapped, plan.turn, doStrip);
 
-    if (!body && raw.trim()) {
-      console.warn("[NarrativeAgent] 解析后正文为空，原始返回如下（仅日志）:\n" + raw.slice(0, 2000));
-    }
-
-    // 状态追踪兜底：模型没给状态块就沿用上一轮，保证每段末尾都能看到完整状态
+    // 状态追踪兜底：模型没给状态块就沿用上一轮；缺项用上一轮同名项补齐。
+    // 补齐结果只进存档与变量（供下一轮注入），不写回消息。
     const prevState = this.engine.prevState();
     let finalState = stateText;
     if (!finalState && prevState) {
@@ -188,39 +174,52 @@ export class NarrativeBridge {
       console.warn(`[NarrativeAgent] 第${plan.turn}轮状态块缺项，已用上一轮补齐：${filled.join("、")}`);
     }
 
-    const bodyText = body || EMPTY_OUTPUT_NOTICE;
-    const showState = this.engine.config?.showStateInMessage !== false;
-    msg.mes = finalState && showState ? `${bodyText}\n\n${finalState}` : bodyText;
-    try {
-      if (typeof ctx.updateMessageBlock === "function") ctx.updateMessageBlock(index, msg);
-    } catch (e) {
-      console.warn("[NarrativeAgent] 刷新消息显示失败:", e?.message);
-    }
-
     if (finalState) {
       this.engine.applyState(finalState, plan.turn);
     } else {
       console.warn(`[NarrativeAgent] 第${plan.turn}轮没有任何状态可记录（首轮且模型未输出状态块）`);
     }
 
+    if (!body && raw.trim()) {
+      console.warn("[NarrativeAgent] 解析后正文为空，原始返回如下（仅日志）:\n" + raw.slice(0, 2000));
+    }
+
     this.engine.afterTurn(plan.turn);
 
+    // 关键：不写 msg.mes、不 updateMessageBlock、不手动 emit 事件。
+    // 消息文本与 prompt 一律归 ST 与预设所有（正则清洗 / 破甲栈都在那边）。
     try {
       if (typeof ctx.saveChat === "function") await ctx.saveChat();
     } catch (e) {
       console.warn("[NarrativeAgent] 保存聊天失败:", e?.message);
     }
 
-    // 注意：这里不要再手动 emit MESSAGE_UPDATED / CHARACTER_MESSAGE_RENDERED。
-    // ST 的 generateRawData 本身也会 emit CHAT_COMPLETION_PROMPT_READY（dryRun:false），
-    // 而每次 Generate() 都会覆盖 ST 的全局 abortController（script.js:4243）。
-    // 手动 emit 很容易诱发其它扩展（如 expressions）在生成收尾阶段再发一次请求，
-    // 把主请求的 abortController 顶掉 → 直接表现为「API 断联」。
-
     console.log(
       `[NarrativeAgent] 第${plan.turn}轮完成：正文 ${body.length} 字符` +
-        `${hadThinking ? "（已剥离思考块）" : ""}` +
-        `${finalState ? `，状态追踪${showState ? "已附在消息末尾" : "已存档（未展示）"}` : "，无状态追踪"}`
+        `${hadThinking ? "（解析时已剥离思考块）" : ""}` +
+        `${finalState ? "，状态已存档并写入 {{getvar::na_state}}" : "，无状态可存档"}`
     );
   }
+}
+
+/**
+ * 剥掉「代码补全」类破甲外壳，仅用于解析（消息本身不动）。
+ *
+ * 目标是让状态块能被 parseModelOutput 找到。原预设的外壳形如：
+ *   import sys
+ *   content = """<｜begin｜>……正文……<｜over｜>"""
+ *   sys.stdout.write(content)
+ * 它由预设的正则在「渲染」和「组装 prompt」时剥离；而存储的消息文本里外壳仍在，
+ * 所以本插件要在解析前自行剥一遍。
+ *
+ * 采用「逐段删外壳」而不是「截取标记之间的内容」：这样即使模型把内容写到标记之外，
+ * 那部分也会被保留下来，不会整段丢失。
+ */
+function unwrapBypassShell(text) {
+  let out = String(text ?? "");
+  out = out.replace(/^[ \t]*import[ \t]+sys[ \t]*\r?\n/i, "");
+  out = out.replace(/[ \t]*content[ \t]*=[ \t]*"""\s*<[|｜]\s*begin\s*[|｜]>\s*\r?\n?/i, "");
+  out = out.replace(/\r?\n?\s*<[|｜]\s*over\s*[|｜]>\s*"{3,4}/i, "");
+  out = out.replace(/^[ \t]*sys\.stdout\.write\([ \t]*content[ \t]*\)[ \t]*$/gim, "");
+  return out;
 }

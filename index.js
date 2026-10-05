@@ -13,9 +13,10 @@ import {
   deleteChatState,
   purgeLegacyGlobals,
 } from "./settings.js";
-import { getSTContext, getConversationId, truncate } from "./utils.js";
+import { getSTContext, getConversationId, truncate, setChatVariable } from "./utils.js";
 import { selectHistory } from "./prompt.js";
 import { extractPresetRules } from "./preset.js";
+import { STATE_VARIABLE_KEY } from "./constants.js";
 
 let config = null;
 let engine = null;
@@ -161,6 +162,8 @@ function createEngine(chatId) {
       summary.setTracking(stateText, turn);
       checkpoints.save(turn, stateText);
       saveChatState(chatId, summary.toDict());
+      // 状态后端版的核心出口：写进聊天变量，由预设条目 {{getvar::na_state}} 在下一轮自行注入
+      setChatVariable(STATE_VARIABLE_KEY, stateText);
     },
 
     afterTurn() {
@@ -203,6 +206,7 @@ function installLifecycleHandlers() {
     engine.world.refresh().catch(() => {});
     engine.character.prefetch().catch(() => {});
     console.log("[NarrativeAgent] 已切换到聊天:", newChatId);
+    syncStateVariable();
     refreshDisplay();
   });
 
@@ -228,12 +232,23 @@ function refreshDisplay() {
   const turn = engine.summary.getTurn();
   const world = engine.world.status;
   const lines = [
+    "✅ 状态后端版 v0.5.0（只读 · 不改写 prompt / 不改写消息）",
     `轮次：已完成 ${completedTurns()} 轮｜状态记录：第 ${turn} 轮`,
     `世界书：${world.loaded ? `${world.count} 条${world.error ? `（上次读取失败：${world.error}）` : ""}` : "未加载"}`,
+    `状态变量 na_state：${tracking ? "已写入（供预设 {{getvar::na_state}} 读取）" : "空"}`,
     "",
     tracking ? truncate(tracking, 1200) : "（暂无状态追踪）",
   ];
   $display.text(lines.join("\n"));
+}
+
+/**
+ * 把当前聊天的状态同步到 ST 聊天变量（预设用 {{getvar::na_state}} 读取）。
+ * 调用时机：初始化、切换聊天、每次状态更新（见 engine.applyState）。
+ */
+function syncStateVariable() {
+  if (!engine) return;
+  setChatVariable(STATE_VARIABLE_KEY, engine.prevState() || "");
 }
 
 async function registerSettingsPane() {
@@ -326,6 +341,7 @@ async function init() {
   engine = createEngine(chatId);
   bridge = new NarrativeBridge(engine);
   bridge.enabled = config.enabled === true;
+  syncStateVariable();
 
   // 预取世界书：prompt 必须在事件回调里同步拼好，所以条目要提前缓存
   await engine.world.refresh();

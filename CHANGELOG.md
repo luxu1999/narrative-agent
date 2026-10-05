@@ -1,5 +1,52 @@
 # 更新日志
 
+## v0.5.0-readonly — 状态后端版（不改写 prompt / 消息）
+
+本版把插件从「接管者」降级为「**只读状态后端**」。**这是为了与预设的破甲栈共存。**
+
+原预设的破甲寄生在 ST 的两条管线上：prompt 组装（首条 system 的任务框架、末条 user 的光标锚点、assistant 预填位置）与正则清洗（渲染时剥外壳、组装时净化历史）。v0.4.x 用 `chat.splice()` 整段替换 prompt、再用解析后的正文重建 `msg.mes`，等于把这两条管线一起绕开——**破甲必然失效**。
+
+### 改了什么
+
+1. **不再替换 prompt**（`bridge.js._onPromptReady`）
+   删除 `chat.splice(0, chat.length, ...messages)`，只记录本轮轮次。prompt 由 ST + 预设原样组装。
+
+2. **不再改写消息**（`bridge.js._onGenerationEnded`）
+   删除 `msg.mes` 重建与 `updateMessageBlock`。消息文本一律交给 ST 的正则管线处理。
+
+3. **状态改走聊天变量**（`utils.js` + `index.js` + `constants.js`）
+   解析出的状态在补齐缺项后写入聊天变量 `na_state`：优先 `TavernHelper.setVariables({type:'chat'})`，回退 ST 原生 `chatMetadata.variables`。
+   预设侧需要配一条读它的条目：
+
+   ```
+   <previous_state>
+   {{getvar::na_state}}
+   </previous_state>
+   ```
+
+   位置要求：靠后，且必须在光标锚点 `<｜cursor｜>` **之前**（否则会顶掉 prompt 末位，破坏补全框架）。
+
+4. **解析前先剥破甲外壳**（`bridge.js` 新增 `unwrapBypassShell()`）
+   破甲输出的 Python 外壳（`import sys` / `content = """<｜begin｜>…<｜over｜>"""` / `sys.stdout.write(content)`）只由预设的 `markdownOnly + promptOnly` 正则剥离，**不作用于存储文本**，所以插件在解析前必须自行剥一遍。
+   实现上采用「逐段删外壳」而非「截取标记之间的内容」：这样即使模型把内容写到标记之外，那部分也会保留下来，不会整段丢失。
+
+### 保留不变
+
+`parse.js` 的三道兜底（字段级补齐 / 整块沿用 / 存档）、`settings.js` 每聊天持久化、`summary.js` 快照回滚，全部保留。
+
+### 副作用与取舍
+
+- **消息里不保证一定是完整 10 项**：模型漏写就没写；但写入变量的那一份永远补齐过，**模型每轮读到的都是完整版**。
+- **设置面板里四节（历史窗口 / 写作规则来源 / Prompt 上限 / 世界书）本版不再生效**，界面上已标注。这些路径的预取仍在跑，属浪费不属故障。
+- **`showStateInMessage` 已失效。**
+
+### 与预设的分工
+
+| | 负责 |
+|---|---|
+| 预设 | 生成、输出形态、破甲栈、正则清洗、状态规格条目 |
+| 本插件 | 状态解析、补齐、存档、写入 `na_state` |
+
 ## v0.4.3-slim — 预设桥补强
 
 配合预设新增的破限/时间/硬约束条目，做两处补强。**无 API 相关改动**。

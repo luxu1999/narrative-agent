@@ -7,6 +7,13 @@ export const EXTENSION_ID = "narrative-agent";
 export const PLACEHOLDER = "__NA_PLACEHOLDER__";
 export const STORAGE_PREFIX = "na:";
 
+/**
+ * 状态后端版：把最近一轮状态写进这个「聊天级变量」，
+ * 由预设条目用 {{getvar::na_state}} 在下一轮自行注入。
+ * 这是本插件与预设之间唯一的接口。
+ */
+export const STATE_VARIABLE_KEY = "na_state";
+
 export const DEFAULT_CONFIG = {
   enabled: true,
   worldbookSource: "auto", // auto | card | world
@@ -17,7 +24,8 @@ export const DEFAULT_CONFIG = {
   historyWindow: 3, // n：最小历史轮数
   historyGrowth: 3, // m：生长缓冲（窗口在 n ~ n+m 之间）
   stripThinking: true,
-  showStateInMessage: true, // 在消息末尾展示完整状态追踪
+  // 状态后端版不再改写消息，此项已不生效（保留字段以免旧配置报错）
+  showStateInMessage: true,
 };
 
 export const EMPTY_OUTPUT_NOTICE =
