@@ -18,6 +18,7 @@ import { selectHistory } from "./prompt.js";
 import { extractPresetRules } from "./preset.js";
 import { STATE_VARIABLE_KEY } from "./constants.js";
 import { applyInjection, injectionMode } from "./inject.js";
+import { renderStateIntoMessage, renderAllStateViews, clearAllStateViews } from "./render.js";
 
 let config = null;
 let engine = null;
@@ -180,6 +181,23 @@ function createEngine(chatId) {
 
     afterTurn() {
       saveChatState(chatId, summary.toDict());
+      // 把刚存下的状态画进这条消息（此刻通常已渲染；若还没渲染，
+      // CHARACTER_MESSAGE_RENDERED 之后会再补一次，两者幂等）
+      const idx = (getSTContext()?.chat?.length || 0) - 1;
+      if (idx >= 0) {
+        try {
+          renderStateIntoMessage(idx, eng, config);
+        } catch {
+          /* ignore */
+        }
+        setTimeout(() => {
+          try {
+            renderStateIntoMessage(idx, eng, config);
+          } catch {
+            /* ignore */
+          }
+        }, 260);
+      }
       world.refresh().catch(() => {});
       character.prefetch().catch(() => {});
       refreshDisplay();
@@ -207,6 +225,17 @@ function installLifecycleHandlers() {
   if (!ctx?.eventSource) return;
   const t = ctx.eventTypes;
 
+  // 显示层注入：消息渲染 / 被更新时，把该轮的状态补进 DOM（纯展示，不改消息文本）
+  const onRendered = (index) => {
+    try {
+      renderStateIntoMessage(Number(index), engine, config);
+    } catch (e) {
+      console.warn("[NarrativeAgent] 状态块渲染失败:", e?.message);
+    }
+  };
+  if (t.CHARACTER_MESSAGE_RENDERED) ctx.eventSource.on(t.CHARACTER_MESSAGE_RENDERED, onRendered);
+  if (t.MESSAGE_UPDATED) ctx.eventSource.on(t.MESSAGE_UPDATED, onRendered);
+
   ctx.eventSource.on(t.CHAT_CHANGED, () => {
     const newChatId = getConversationId();
     // 切换聊天时丢弃未收尾的计划：正在进行的生成结束后不得改动新聊天的消息
@@ -225,6 +254,13 @@ function installLifecycleHandlers() {
     } catch {
       /* ignore */
     }
+    setTimeout(() => {
+      try {
+        renderAllStateViews(engine, config);
+      } catch {
+        /* ignore */
+      }
+    }, 250);
     refreshDisplay();
   });
 
@@ -250,7 +286,7 @@ function refreshDisplay() {
   const turn = engine.summary.getTurn();
   const world = engine.world.status;
   const lines = [
-    "✅ 状态后端版 v0.6.1（只读 · 不改写 prompt / 不改写消息）",
+    "✅ 状态后端版 v0.6.2（只读 · 不改写 prompt / 不改写消息）",
     `轮次：已完成 ${completedTurns()} 轮｜状态记录：第 ${turn} 轮`,
     `注入：${injectionMode(config)}｜上一轮状态深度 ${config?.prevInjectDepth ?? 1}`,
     `状态变量 na_state：${tracking ? "已写入" : "空"}`,
@@ -321,7 +357,22 @@ async function registerSettingsPane() {
   bindCheckbox("#na_inject_keyword", () => config.injectKeywordEntries !== false, (v) => { config.injectKeywordEntries = v; });
   bindCheckbox("#na_inject_preset", () => config.injectPresetRules !== false, (v) => { config.injectPresetRules = v; });
   bindCheckbox("#na_strip_thinking", () => config.stripThinking !== false, (v) => { config.stripThinking = v; });
-  bindCheckbox("#na_show_state", () => config.showStateInMessage !== false, (v) => { config.showStateInMessage = v; });
+  bindCheckbox("#na_show_state", () => config.showStateInMessage !== false, (v) => {
+    config.showStateInMessage = v;
+    if (v) {
+      try {
+        renderAllStateViews(engine, config);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      try {
+        clearAllStateViews();
+      } catch {
+        /* ignore */
+      }
+    }
+  });
 
   // 自动注入相关：改完立刻生效（无需刷新页面）
   const reInject = () => {
