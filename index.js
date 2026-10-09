@@ -95,6 +95,11 @@ function createEngine(chatId) {
       return Math.max(completedTurns(), summary.getTurn()) + 1;
     },
 
+    /** 已完成轮次（收尾时用它作为「刚结束那一轮」的编号）。 */
+    completedTurns() {
+      return completedTurns();
+    },
+
     prevState() {
       return summary.getTracking();
     },
@@ -210,6 +215,7 @@ function installLifecycleHandlers() {
     engine.persist();
     engine = createEngine(newChatId);
     bridge.engine = engine;
+    if (bridge) bridge.resetProcessed();
     engine.world.refresh().catch(() => {});
     engine.character.prefetch().catch(() => {});
     console.log("[NarrativeAgent] 已切换到聊天:", newChatId);
@@ -244,11 +250,17 @@ function refreshDisplay() {
   const turn = engine.summary.getTurn();
   const world = engine.world.status;
   const lines = [
-    "✅ 状态后端版 v0.6.0（只读 · 不改写 prompt / 不改写消息）",
+    "✅ 状态后端版 v0.6.1（只读 · 不改写 prompt / 不改写消息）",
     `轮次：已完成 ${completedTurns()} 轮｜状态记录：第 ${turn} 轮`,
-    `注入：${injectionMode(config)}`,
-    `世界书：${world.loaded ? `${world.count} 条${world.error ? `（上次读取失败：${world.error}）` : ""}` : "未加载"}`,
+    `注入：${injectionMode(config)}｜上一轮状态深度 ${config?.prevInjectDepth ?? 1}`,
     `状态变量 na_state：${tracking ? "已写入" : "空"}`,
+    engine.lastRun
+      ? `最近一轮：第 ${engine.lastRun.turn} 轮 ${engine.lastRun.at}｜`
+        + `${engine.lastRun.hadState ? "解析到状态块" : engine.lastRun.reusedPrev ? "未解析到，沿用上一轮" : "无状态"}`
+        + `${engine.lastRun.filled.length ? `｜已补齐 ${engine.lastRun.filled.length} 项（${engine.lastRun.filled.join("、")}）` : ""}`
+        + `｜正文 ${engine.lastRun.bodyLen} 字 / 原始返回 ${engine.lastRun.rawLen} 字`
+      : "最近一轮：尚未记录（还没生成过，或收尾没跑到）",
+    `世界书：${world.loaded ? `${world.count} 条${world.error ? `（上次读取失败：${world.error}）` : ""}` : "未加载"}`,
     "",
     tracking ? truncate(tracking, 1200) : "（暂无状态追踪）",
   ];

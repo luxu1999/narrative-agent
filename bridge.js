@@ -34,8 +34,8 @@ export class NarrativeBridge {
     this._plan = null;
     this._installed = false;
     this._quietActive = 0; // 正在进行的「非用户生成」（其它扩展的 quiet 调用）数量
+    this._lastFp = null;   // 上次处理过的消息指纹（幂等，避免同一条重复处理）
     this._boundStarted = this._onGenerationStarted.bind(this);
-    this._boundPromptReady = this._onPromptReady.bind(this);
     this._boundEnded = this._onGenerationEnded.bind(this);
   }
 
@@ -53,7 +53,6 @@ export class NarrativeBridge {
     }
     const t = ctx.eventTypes;
     ctx.eventSource.on(t.GENERATION_STARTED, this._boundStarted);
-    ctx.eventSource.on(t.CHAT_COMPLETION_PROMPT_READY, this._boundPromptReady);
     ctx.eventSource.on(t.GENERATION_ENDED, this._boundEnded);
     this._installed = true;
     console.log("[NarrativeAgent] 拦截层已安装（只读状态后端）");
@@ -65,11 +64,11 @@ export class NarrativeBridge {
     if (!ctx?.eventSource) return;
     const t = ctx.eventTypes;
     ctx.eventSource.removeListener(t.GENERATION_STARTED, this._boundStarted);
-    ctx.eventSource.removeListener(t.CHAT_COMPLETION_PROMPT_READY, this._boundPromptReady);
     ctx.eventSource.removeListener(t.GENERATION_ENDED, this._boundEnded);
     this._installed = false;
     this._plan = null;
     this._quietActive = 0;
+    this._lastFp = null;
     // 关闭时把注入一并撤掉，避免残留内容继续进入 prompt
     try {
       clearInjection();
@@ -90,18 +89,17 @@ export class NarrativeBridge {
     const t = typeof type === "string" && type ? type : GEN_NORMAL;
     this._genType = t;
     if (USER_GENERATION_TYPES.has(t)) {
-      // 新一轮用户生成：上一轮若因异常没走到收尾，这里丢掉残留计划，避免串轮
-      this._plan = null;
-      // 自动注入必须赶在 prompt 组装之前：GENERATION_STARTED 早于组装，
-      // 而 CHAT_COMPLETION_PROMPT_READY 时 prompt 已经拼好了，再设就晚了。
-      // 这里顺带把轮次号刷新成本轮。
+      // 自动注入赶在 prompt 组装之前刷新一次（轮次号 + 上一轮状态）。
+      // 注意：这只是"让规格里的轮次号更新一些"，收尾时还会再刷一次；
+      // 即使这个事件没触发，也不会导致漏记（见 _onGenerationEnded）。
       try {
         applyInjection(this.engine, this.engine?.config, this.engine?.nextTurn?.() || 1);
       } catch (e) {
         console.warn("[NarrativeAgent] 自动注入失败:", e?.message);
       }
     } else {
-      // 其它扩展发起的生成：标记一下，结束时不要误当成我们的收尾
+      // 其它扩展发起的生成：撤掉我们的注入，避免污染它们的 prompt。
+      // 不再靠计数器判断收尾归属——改为看「最后一条消息内容是否变化」，更稳。
       this._quietActive++;
       // 别人的 prompt 不注入我们的内容，避免造成干扰
       try {
@@ -112,100 +110,70 @@ export class NarrativeBridge {
     }
   }
 
-  _onPromptReady(data) {
-    if (!this.enabled) return;
-    // ST 会用同一事件做 token 预算的 dry run；改写它没有意义，还可能污染 _plan
-    if (data?.dryRun === true) return;
-    if (!USER_GENERATION_TYPES.has(this._genType)) {
-      // 不是用户主动发起的生成（例如其它扩展的 quiet 调用）→ 原样放行，不改写它的 prompt
-      if (this._genType == null && !this._warnedNoType) {
-        this._warnedNoType = true;
-        console.warn(
-          "[NarrativeAgent] 收到 prompt 就绪事件但没有 GENERATION_STARTED，本次不接管。若每轮都不生效，请反馈 ST 版本。"
-        );
-      }
-      return;
-    }
-    // 同一次生成里重复触发（例如生成期间的 dry run 或重复安装的监听器）→ 只改写一次
-    if (this._plan) {
-      console.warn("[NarrativeAgent] 本次生成已改写 prompt，跳过重复改写");
-      return;
-    }
-    const ctx = getSTContext();
-    const chat = Array.isArray(data?.chat) ? data.chat : null;
-    if (!chat || chat.length === 0) return;
-
-    const last = chat[chat.length - 1];
-    const lastIsUser = !!last && (last.is_user === true || last.role === "user");
-    const isContinuation = CONTINUATION_TYPES.has(this._genType);
-    if (!lastIsUser && !isContinuation) return;
-
-    // 只记轮次，不碰 prompt：
-    // prompt 由 ST + 预设原样组装，本插件只在生成结束后读消息、写变量。
-    const turn = this.engine.nextTurn();
-    this._plan = { turn };
-    console.log(`[NarrativeAgent] 第${turn}轮：只读模式已就绪（不改写 prompt、不改写消息）`);
-  }
-
   async _onGenerationEnded() {
-    // 其它扩展的生成结束了，不是我们的这一轮 → 只销账，不动消息。
-    // 但如果最后一条已经是 AI 消息，说明结束的是我们这一轮（quiet 调用不会往 chat 里写消息），
-    // 这时不能再当成 quiet 销账，否则正文里的 <state> 块会残留。
-    if (this._quietActive > 0) {
-      const c = getSTContext()?.chat;
-      const last = Array.isArray(c) && c.length > 0 ? c[c.length - 1] : null;
-      const lastIsAi = !!last && last.is_user !== true && last.role !== "user";
-      if (!lastIsAi) {
-        this._quietActive--;
-        return;
-      }
-    }
-    const plan = this._plan;
-    this._plan = null;
-    this._genType = null;
-    if (!plan) return;
-
     const ctx = getSTContext();
     const chat = Array.isArray(ctx?.chat) ? ctx.chat : null;
     if (!chat || chat.length === 0) return;
 
+    // ── 判定「这一轮是不是我们的」不再依赖任何 ST 事件细节 ──
+    // 旧版要求 GENERATION_STARTED 上报的类型属于已知集合，否则这一轮直接漏记。
+    // 现在只看两个客观事实：最后一条是不是 AI 消息、它的内容有没有变化过。
+    // 于是「事件没触发 / 类型不认识 / quiet 调用干扰」都不会再造成漏记。
     const index = chat.length - 1;
     const msg = chat[index];
-    if (!msg || msg.is_user === true || msg.role === "user") {
-      console.warn("[NarrativeAgent] 收尾时最后一条不是 AI 消息，跳过处理（不改动消息）");
-      return;
-    }
+    if (!msg || msg.is_user === true || msg.role === "user") return;
 
     // 保留原始文本，一个字都不写回去。
     const raw = String(msg.mes ?? msg.content ?? "");
+    if (!raw.trim()) return;
+
+    // 指纹：索引 + 长度 + 尾部片段。同一条消息只处理一次（幂等），
+    // 重新生成 / swipe 会改变内容 → 指纹变化 → 正常再处理一次。
+    const fp = `${index}|${raw.length}|${raw.slice(-96)}`;
+    if (this._lastFp === fp) return;
+    this._lastFp = fp;
+
+    // 轮次：此刻这条 AI 消息已经在 chat 里，completedTurns() 就是本轮轮次
+    const turn = this.engine?.completedTurns?.() || this.engine?.nextTurn?.() || 1;
+
     // 先剥掉「代码补全」类破甲外壳（只作用于解析副本），否则状态块会被 Python 外壳挡住。
     const unwrapped = unwrapBypassShell(raw);
     const doStrip = this.engine.config?.stripThinking !== false;
-    const { body, stateText, filled, hadThinking } = parseModelOutput(unwrapped, plan.turn, doStrip);
+    const { body, stateText, filled, hadThinking } = parseModelOutput(unwrapped, turn, doStrip);
 
     // 状态追踪兜底：模型没给状态块就沿用上一轮；缺项用上一轮同名项补齐。
     // 补齐结果只进存档与变量（供下一轮注入），不写回消息。
     const prevState = this.engine.prevState();
     let finalState = stateText;
+    let reusedPrev = false;
     if (!finalState && prevState) {
-      finalState = formatStateBlock(prevState, plan.turn, prevState).text;
-      console.warn(`[NarrativeAgent] 第${plan.turn}轮未解析出状态块，沿用上一轮状态`);
+      finalState = formatStateBlock(prevState, turn, prevState).text;
+      reusedPrev = true;
+      console.warn(`[NarrativeAgent] 第${turn}轮未解析出状态块，沿用上一轮状态`);
     }
     if (finalState && filled && filled.length > 0) {
-      console.warn(`[NarrativeAgent] 第${plan.turn}轮状态块缺项，已用上一轮补齐：${filled.join("、")}`);
+      console.warn(`[NarrativeAgent] 第${turn}轮状态块缺项，已用上一轮补齐：${filled.join("、")}`);
     }
 
-    if (finalState) {
-      this.engine.applyState(finalState, plan.turn);
-    } else {
-      console.warn(`[NarrativeAgent] 第${plan.turn}轮没有任何状态可记录（首轮且模型未输出状态块）`);
-    }
+    if (finalState) this.engine.applyState(finalState, turn);
 
     if (!body && raw.trim()) {
       console.warn("[NarrativeAgent] 解析后正文为空，原始返回如下（仅日志）:\n" + raw.slice(0, 2000));
     }
 
-    this.engine.afterTurn(plan.turn);
+    // 面板可见的诊断（手机上开不了控制台，这些必须能看见）
+    this.engine.lastRun = {
+      turn,
+      hadState: !!stateText,
+      reusedPrev,
+      filled: filled || [],
+      bodyLen: body.length,
+      rawLen: raw.length,
+      hadThinking,
+      at: new Date().toLocaleTimeString(),
+    };
+
+    this.engine.afterTurn(turn);
 
     // 关键：不写 msg.mes、不 updateMessageBlock、不手动 emit 事件。
     // 消息文本与 prompt 一律归 ST 与预设所有（正则清洗 / 破甲栈都在那边）。
@@ -215,11 +183,23 @@ export class NarrativeBridge {
       console.warn("[NarrativeAgent] 保存聊天失败:", e?.message);
     }
 
+    // 收尾后再刷一次注入（轮次号 + 上一轮状态），与 GENERATION_STARTED 那次互为兜底
+    try {
+      applyInjection(this.engine, this.engine.config, this.engine.nextTurn());
+    } catch {
+      /* ignore */
+    }
+
     console.log(
-      `[NarrativeAgent] 第${plan.turn}轮完成：正文 ${body.length} 字符` +
+      `[NarrativeAgent] 第${turn}轮完成：正文 ${body.length} 字符` +
         `${hadThinking ? "（解析时已剥离思考块）" : ""}` +
-        `${finalState ? "，状态已存档并写入 {{getvar::na_state}}" : "，无状态可存档"}`
+        `${stateText ? "，状态已更新" : reusedPrev ? "，沿用上一轮状态" : "，无状态可记录"}`
     );
+  }
+
+  /** 切换聊天时清掉「已处理」指纹，避免新聊天被旧指纹挡住。 */
+  resetProcessed() {
+    this._lastFp = null;
   }
 }
 
